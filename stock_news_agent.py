@@ -476,7 +476,7 @@ def add_symbol_specific_feeds(base_feeds: List[str], watchlist: List[str]) -> Li
 # ============================================================
 # HTML OUTPUT
 # ============================================================
-def generate_html_dashboard(items: List[NewsItem], output_file: str = "stock_news_dashboard.html"):
+def generate_html_dashboard(items: List[NewsItem], output_file: str = "index.html"):
     html = ["""
     <html>
     <head>
