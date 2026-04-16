@@ -1,0 +1,5 @@
+to get list of env
+conda env list
+conda activate kronos
+python kronos_stock_test.py
+if you got yfinance error pip install yfinance
