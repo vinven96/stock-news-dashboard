@@ -1,123 +1,160 @@
 import feedparser
-import requests
 import re
-import time
-from dataclasses import dataclass, asdict
+import html as html_lib
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import List, Dict, Optional, Tuple
-from urllib.parse import quote_plus
+
 
 # ============================================================
-# STOCK NEWS AGENT
-# ------------------------------------------------------------
-# What it does:
-# 1. Pulls RSS feeds for broad market, sectors, and tickers
-# 2. Detects analyst upgrades / downgrades / initiations
-# 3. Detects important macro / sector / company-impacting news
-# 4. Scores each item by importance
-# 5. Maps each item to one or more tickers / sectors
-# 6. Prints a ranked watchlist for the user
-# ------------------------------------------------------------
-# Install:
-#   pip install feedparser requests pandas
-#
-# Optional:
-#   You can later wire this into email / Slack / DB / scheduler.
+# CONFIG
 # ============================================================
 
-# -----------------------------
-# USER CONFIG
-# -----------------------------
 WATCHLIST = [
-    "NVDA", "AMD", "MU", "AVGO", "LITE", "AAOI", "AAPL", "MSFT", "AMZN", "TSLA"
+    "NVDA", "AMD", "MU", "AVGO", "LITE", "AAOI",
+    "AAPL", "MSFT", "AMZN", "META", "GOOGL",
+    "TSLA", "NFLX", "JPM", "LLY", "SMCI", "ANET"
 ]
+
+# Bigger names / higher quality names you want to prioritize
+QUALITY_STOCKS = {
+    "NVDA", "AMD", "MU", "AVGO", "LITE", "AAOI",
+    "AAPL", "MSFT", "AMZN", "META", "GOOGL",
+    "TSLA", "NFLX", "JPM", "LLY", "SMCI", "ANET",
+    "MRVL", "QCOM", "ARM", "ASML", "TSM", "CRM",
+    "ORCL", "ADBE", "UBER", "COST", "WMT"
+}
 
 TICKER_TO_SECTOR = {
     "NVDA": "Semiconductors",
     "AMD": "Semiconductors",
-    "MU": "Semiconductors",
+    "MU": "Memory",
     "AVGO": "Semiconductors",
     "LITE": "Optical Networking",
     "AAOI": "Optical Networking",
     "AAPL": "Consumer Technology",
-    "MSFT": "Software",
+    "MSFT": "Software / Cloud",
     "AMZN": "Internet / Cloud",
+    "META": "Internet / Advertising",
+    "GOOGL": "Internet / Advertising",
     "TSLA": "EV / Auto",
+    "NFLX": "Media / Streaming",
+    "JPM": "Financials",
+    "LLY": "Pharma / Biotech",
+    "SMCI": "AI Infrastructure",
+    "ANET": "Networking",
+    "MRVL": "Semiconductors",
+    "QCOM": "Semiconductors",
+    "ARM": "Semiconductors",
+    "ASML": "Semiconductor Equipment",
+    "TSM": "Foundry",
+    "CRM": "Software / Cloud",
+    "ORCL": "Software / Cloud",
+    "ADBE": "Software",
+    "UBER": "Internet",
+    "COST": "Consumer",
+    "WMT": "Consumer",
 }
 
 SECTOR_KEYWORDS = {
-    "Semiconductors": ["semiconductor", "chip", "chips", "gpu", "memory", "dram", "nand", "foundry", "fab"],
-    "Optical Networking": ["optical", "datacenter interconnect", "transceiver", "photonics", "networking"],
-    "Software": ["software", "cloud", "saas", "ai software", "enterprise software"],
-    "Internet / Cloud": ["cloud", "e-commerce", "retail", "ad spending", "aws", "consumer internet"],
-    "Consumer Technology": ["iphone", "smartphone", "consumer electronics", "devices", "wearables"],
-    "EV / Auto": ["ev", "electric vehicle", "autonomous", "battery", "auto sales"],
+    "Semiconductors": [
+        "semiconductor", "chip", "chips", "gpu", "ai chip", "foundry",
+        "fab", "wafer", "chipmaker", "datacenter chip"
+    ],
+    "Memory": [
+        "dram", "nand", "memory prices", "memory pricing", "hbm",
+        "memory chip", "memory market"
+    ],
+    "Optical Networking": [
+        "optical", "transceiver", "photonics", "coherent", "datacenter interconnect"
+    ],
+    "Software / Cloud": [
+        "cloud", "software", "saas", "enterprise software", "enterprise ai"
+    ],
+    "Internet / Cloud": [
+        "e-commerce", "internet", "cloud", "online ads", "digital advertising"
+    ],
+    "Internet / Advertising": [
+        "advertising", "digital ads", "ad spend", "internet platform"
+    ],
+    "EV / Auto": [
+        "ev", "electric vehicle", "battery", "auto sales", "autonomous"
+    ],
+    "Financials": [
+        "bank", "banking", "loan growth", "credit quality", "net interest income"
+    ],
+    "AI Infrastructure": [
+        "server", "rack", "ai server", "liquid cooling", "infrastructure buildout"
+    ],
+    "Networking": [
+        "ethernet", "switching", "routing", "networking", "datacenter network"
+    ],
+    "Pharma / Biotech": [
+        "drug trial", "fda", "approval", "phase 3", "clinical trial"
+    ],
+    "Consumer": [
+        "consumer spending", "retail sales", "same-store sales"
+    ]
 }
 
-# Broad RSS feeds. Add/remove as needed.
 RSS_FEEDS = [
-    # Reuters markets/business
     "https://feeds.reuters.com/reuters/businessNews",
     "https://feeds.reuters.com/news/usmarkets",
-
-    # MarketWatch top stories
-    "http://feeds.marketwatch.com/marketwatch/topstories/",
-
-    # Seeking Alpha symbols and market news (some feeds may vary over time)
-    "https://seekingalpha.com/feed.xml",
-
-    # CNBC world / finance
     "https://www.cnbc.com/id/100003114/device/rss/rss.html",
-
-    # Yahoo Finance general news
     "https://finance.yahoo.com/news/rssindex",
+    "http://feeds.marketwatch.com/marketwatch/topstories/",
 ]
 
-# Analyst signal words
-UPGRADE_WORDS = [
-    "upgrade", "upgraded", "raises rating", "raised to buy", "raised to overweight",
-    "raised to outperform", "initiated with buy", "initiated at buy", "bullish on"
-]
-DOWNGRADE_WORDS = [
-    "downgrade", "downgraded", "cuts rating", "cut to hold", "cut to underperform",
-    "cut to neutral", "initiated with sell", "bearish on"
-]
-TARGET_UP_WORDS = [
-    "raises price target", "raised price target", "pt raised", "target raised"
-]
-TARGET_DOWN_WORDS = [
-    "cuts price target", "cut price target", "pt cut", "target lowered", "lowers price target"
+MAX_ITEMS_PER_FEED = 100
+
+IMPORTANT_MACRO = [
+    "cpi", "ppi", "pce", "inflation", "nonfarm payrolls", "payrolls",
+    "jobs report", "jobless claims", "unemployment rate", "gdp",
+    "retail sales", "consumer confidence", "ism manufacturing", "ism services",
+    "treasury yield", "treasury yields", "10-year yield", "bond yields"
 ]
 
-# Important market / sector impact words
-HIGH_IMPACT_KEYWORDS = [
-    "guidance", "warns", "warning", "sec", "doj", "probe", "investigation",
-    "export restriction", "ban", "tariff", "sanctions", "ceasefire", "war",
-    "ai spending", "capex", "demand surge", "supply shortage", "supply glut",
-    "layoffs", "merger", "acquisition", "bankruptcy", "default", "recall",
-    "earnings beat", "earnings miss", "revenue beat", "revenue miss",
-    "cpi", "ppi", "inflation", "fed", "rate cut", "rate hike", "treasury yield",
-    "opec", "oil prices", "guidance raised", "guidance cut"
+IMPORTANT_FED = [
+    "fomc", "federal reserve", "fed meeting", "fed minutes", "powell",
+    "jerome powell", "rate cut", "rate cuts", "rate hike", "rate hikes",
+    "dot plot", "hawkish", "dovish"
 ]
 
-MACRO_KEYWORDS = [
-    "federal reserve", "fed", "inflation", "cpi", "ppi", "rates", "yield", "treasury",
-    "jobs report", "payrolls", "pce", "gdp", "consumer confidence", "retail sales"
+IMPORTANT_ANALYST = [
+    "upgrade", "upgraded", "downgrade", "downgraded",
+    "price target", "raises target", "cuts target",
+    "raises price target", "cuts price target",
+    "outperform", "overweight", "underperform", "neutral", "buy rating", "sell rating"
 ]
 
-SECTOR_MOVING_KEYWORDS = [
-    "sector", "industry", "peer", "competitor", "supply chain", "orders", "backlog",
-    "pricing", "memory prices", "gpu demand", "server demand", "datacenter", "cloud spend"
+IMPORTANT_COMPANY = [
+    "earnings", "guidance", "forecast", "outlook", "revenue beat", "revenue miss",
+    "eps beat", "eps miss", "raises guidance", "cuts guidance",
+    "sec", "doj", "investigation", "probe", "lawsuit",
+    "merger", "acquisition", "deal talks", "bankruptcy",
+    "tariff", "sanctions", "export restriction", "ban",
+    "product launch", "order backlog", "large order", "supply agreement"
 ]
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; StockNewsAgent/1.0)"
-}
+IMPORTANT_SECTOR = [
+    "pricing", "prices rise", "prices fall", "demand surge", "weak demand",
+    "backlog", "capex", "capacity", "utilization", "supply glut", "supply shortage",
+    "cloud spending", "ai spending", "server demand", "memory pricing", "hbm demand"
+]
 
-MAX_ITEMS_PER_FEED = 80
-REQUEST_TIMEOUT = 20
+NOISE_PATTERNS = [
+    "stocks to watch", "top stocks", "best stocks", "3 stocks", "5 stocks",
+    "why this stock", "why these stocks", "market open", "opening bell",
+    "premarket", "pre-market", "technical analysis", "opinion", "editorial",
+    "motley fool", "zacks", "benzinga", "investing.com", "seeking alpha analysis",
+    "dividend stock", "penny stock", "hot stock", "stock picks"
+]
 
+
+# ============================================================
+# DATA MODEL
+# ============================================================
 
 @dataclass
 class NewsItem:
@@ -129,241 +166,19 @@ class NewsItem:
     tickers: List[str]
     sectors: List[str]
     category: str
+    tier: str
     sentiment: str
     impact_score: float
     reasons: List[str]
 
 
-class StockNewsAgent:
-    def __init__(self, watchlist: List[str], ticker_to_sector: Dict[str, str], rss_feeds: List[str]):
-        self.watchlist = [x.upper() for x in watchlist]
-        self.ticker_to_sector = {k.upper(): v for k, v in ticker_to_sector.items()}
-        self.rss_feeds = rss_feeds
-        self.watch_sectors = sorted({self.ticker_to_sector.get(t) for t in self.watchlist if self.ticker_to_sector.get(t)})
-
-    # --------------------------------------------------------
-    # Main run
-    # --------------------------------------------------------
-    def run(self) -> List[NewsItem]:
-        raw_entries = self.fetch_all_feeds()
-        items = []
-
-        for entry in raw_entries:
-            item = self.process_entry(entry)
-            if item is not None:
-                items.append(item)
-
-        deduped = self.deduplicate(items)
-        ranked = sorted(deduped, key=lambda x: (x.impact_score, x.published or datetime.min.replace(tzinfo=timezone.utc)), reverse=True)
-        return ranked
-
-    # --------------------------------------------------------
-    # Feed ingestion
-    # --------------------------------------------------------
-    def fetch_all_feeds(self) -> List[dict]:
-        entries = []
-        for feed_url in self.rss_feeds:
-            try:
-                parsed = feedparser.parse(feed_url)
-                feed_title = parsed.feed.get("title", feed_url)
-                for entry in parsed.entries[:MAX_ITEMS_PER_FEED]:
-                    entry["_feed_title"] = feed_title
-                    entry["_feed_url"] = feed_url
-                    entries.append(entry)
-            except Exception as e:
-                print(f"Feed parse failed for {feed_url}: {e}")
-        return entries
-
-    # --------------------------------------------------------
-    # Processing
-    # --------------------------------------------------------
-    def process_entry(self, entry: dict) -> Optional[NewsItem]:
-        title = clean_text(entry.get("title", ""))
-        summary = clean_text(entry.get("summary", entry.get("description", "")))
-        link = entry.get("link", "")
-        source = entry.get("_feed_title", "Unknown Source")
-        published = parse_published(entry)
-
-        full_text = f"{title}. {summary}".lower()
-        tickers = self.find_tickers(full_text)
-        sectors = self.find_sectors(full_text, tickers)
-
-        category, sentiment, reasons, score = self.classify_item(title, summary, tickers, sectors)
-
-        # Filter out low-value items that do not touch watchlist, sectors, or macro
-        relevant = bool(tickers or sectors or category in {"macro", "market"} or contains_any(full_text, HIGH_IMPACT_KEYWORDS))
-        if not relevant:
-            return None
-
-        # Require some minimum signal strength
-        if score < 1.0:
-            return None
-
-        return NewsItem(
-            title=title,
-            summary=summary,
-            link=link,
-            source=source,
-            published=published,
-            tickers=tickers,
-            sectors=sectors,
-            category=category,
-            sentiment=sentiment,
-            impact_score=round(score, 2),
-            reasons=reasons,
-        )
-
-    def classify_item(self, title: str, summary: str, tickers: List[str], sectors: List[str]) -> Tuple[str, str, List[str], float]:
-        text = f"{title}. {summary}".lower()
-        reasons = []
-        score = 0.0
-        sentiment = "neutral"
-        category = "company"
-
-        # Direct watchlist mention
-        if tickers:
-            score += 2.5
-            reasons.append(f"Mentions watchlist ticker(s): {', '.join(tickers)}")
-
-        # Sector relevance
-        if sectors:
-            score += 1.5
-            reasons.append(f"Touches tracked sector(s): {', '.join(sectors)}")
-
-        # Analyst actions
-        if contains_any(text, UPGRADE_WORDS):
-            category = "analyst"
-            sentiment = "bullish"
-            score += 4.0
-            reasons.append("Analyst upgrade / bullish rating signal")
-
-        if contains_any(text, DOWNGRADE_WORDS):
-            category = "analyst"
-            sentiment = "bearish"
-            score += 4.0
-            reasons.append("Analyst downgrade / bearish rating signal")
-
-        if contains_any(text, TARGET_UP_WORDS):
-            category = "analyst"
-            if sentiment == "neutral":
-                sentiment = "bullish"
-            score += 2.0
-            reasons.append("Price target increased")
-
-        if contains_any(text, TARGET_DOWN_WORDS):
-            category = "analyst"
-            if sentiment == "neutral":
-                sentiment = "bearish"
-            score += 2.0
-            reasons.append("Price target reduced")
-
-        # Macro
-        if contains_any(text, MACRO_KEYWORDS):
-            category = "macro"
-            score += 2.0
-            reasons.append("Macro signal affecting broad market")
-
-        # Sector-moving signals
-        if contains_any(text, SECTOR_MOVING_KEYWORDS):
-            if category == "company":
-                category = "sector"
-            score += 1.5
-            reasons.append("Potential sector or peer impact")
-
-        # High-impact keywords
-        matched_high_impact = matched_keywords(text, HIGH_IMPACT_KEYWORDS)
-        if matched_high_impact:
-            score += min(4.0, 0.8 * len(matched_high_impact))
-            reasons.append("High-impact keywords: " + ", ".join(matched_high_impact[:5]))
-
-        # Earnings / guidance intensity
-        if any(x in text for x in ["earnings", "guidance", "forecast", "outlook"]):
-            score += 1.2
-            reasons.append("Earnings / guidance relevance")
-
-        # Regulatory / geopolitics usually matter a lot
-        if any(x in text for x in ["investigation", "probe", "sec", "doj", "tariff", "sanctions", "ban", "war", "ceasefire"]):
-            score += 1.8
-            reasons.append("Regulatory or geopolitical relevance")
-
-        # Company + sector + market together => more important
-        overlap_bonus = 0.0
-        if tickers and sectors:
-            overlap_bonus += 1.0
-        if category in {"macro", "sector"} and sectors:
-            overlap_bonus += 0.8
-        if category == "analyst" and tickers:
-            overlap_bonus += 1.0
-        score += overlap_bonus
-        if overlap_bonus:
-            reasons.append("Multiple relevance layers overlap")
-
-        # Simple sentiment heuristic if still neutral
-        positive_words = ["beat", "surge", "strong", "raises", "expands", "growth", "bullish", "upside"]
-        negative_words = ["miss", "cuts", "weak", "warning", "probe", "lawsuit", "delay", "drop"]
-        pos_count = sum(1 for w in positive_words if w in text)
-        neg_count = sum(1 for w in negative_words if w in text)
-
-        if sentiment == "neutral":
-            if pos_count > neg_count:
-                sentiment = "bullish"
-            elif neg_count > pos_count:
-                sentiment = "bearish"
-
-        return category, sentiment, reasons, score
-
-    # --------------------------------------------------------
-    # Entity mapping
-    # --------------------------------------------------------
-    def find_tickers(self, text: str) -> List[str]:
-        hits = []
-        for ticker in self.watchlist:
-            patterns = [
-                rf"\b{re.escape(ticker.lower())}\b",
-                rf"\({re.escape(ticker.lower())}\)",
-                rf"\b{re.escape(ticker.lower())}:",
-            ]
-            if any(re.search(p, text) for p in patterns):
-                hits.append(ticker)
-        return sorted(set(hits))
-
-    def find_sectors(self, text: str, tickers: List[str]) -> List[str]:
-        sectors = set()
-
-        # infer from tickers first
-        for t in tickers:
-            sector = self.ticker_to_sector.get(t)
-            if sector:
-                sectors.add(sector)
-
-        # infer from keywords second
-        for sector, keywords in SECTOR_KEYWORDS.items():
-            if any(k.lower() in text for k in keywords):
-                sectors.add(sector)
-
-        return sorted(sectors)
-
-    # --------------------------------------------------------
-    # Deduplication
-    # --------------------------------------------------------
-    def deduplicate(self, items: List[NewsItem]) -> List[NewsItem]:
-        seen = {}
-        for item in items:
-            key = normalize_title(item.title)
-            if key not in seen:
-                seen[key] = item
-            else:
-                # keep the higher-scored item
-                if item.impact_score > seen[key].impact_score:
-                    seen[key] = item
-        return list(seen.values())
-
-
 # ============================================================
-# Helper functions
+# HELPERS
 # ============================================================
+
 def clean_text(text: str) -> str:
-    text = re.sub(r"<[^>]+>", " ", text or "")
+    text = text or ""
+    text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
@@ -376,146 +191,444 @@ def normalize_title(title: str) -> str:
 
 
 def parse_published(entry: dict) -> Optional[datetime]:
-    candidates = [
-        entry.get("published"),
-        entry.get("updated"),
-        entry.get("pubDate"),
-    ]
-    for val in candidates:
-        if not val:
+    for key in ["published", "updated", "pubDate"]:
+        value = entry.get(key)
+        if not value:
             continue
         try:
-            dt = parsedate_to_datetime(val)
+            dt = parsedate_to_datetime(value)
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
             return dt.astimezone(timezone.utc)
         except Exception:
-            continue
+            pass
     return None
 
 
 def contains_any(text: str, patterns: List[str]) -> bool:
+    text = text.lower()
     return any(p.lower() in text for p in patterns)
 
 
 def matched_keywords(text: str, patterns: List[str]) -> List[str]:
+    text = text.lower()
     return [p for p in patterns if p.lower() in text]
 
 
 def fmt_dt(dt: Optional[datetime]) -> str:
-    if dt is None:
+    if not dt:
         return "unknown-time"
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
-def print_report(items: List[NewsItem], top_n: int = 25) -> None:
+# ============================================================
+# AGENT
+# ============================================================
+
+class StockNewsAgent:
+    def __init__(self) -> None:
+        self.watchlist = [t.upper() for t in WATCHLIST]
+        self.quality_stocks = {t.upper() for t in QUALITY_STOCKS}
+        self.ticker_to_sector = {k.upper(): v for k, v in TICKER_TO_SECTOR.items()}
+
+    def fetch_all_feeds(self) -> List[dict]:
+        entries = []
+        for feed_url in RSS_FEEDS:
+            try:
+                parsed = feedparser.parse(feed_url)
+                feed_title = parsed.feed.get("title", feed_url)
+                for entry in parsed.entries[:MAX_ITEMS_PER_FEED]:
+                    entry["_feed_title"] = feed_title
+                    entry["_feed_url"] = feed_url
+                    entries.append(entry)
+            except Exception as exc:
+                print(f"Feed parse failed for {feed_url}: {exc}")
+        return entries
+
+    def run(self) -> List[NewsItem]:
+        raw_entries = self.fetch_all_feeds()
+        processed: List[NewsItem] = []
+
+        for entry in raw_entries:
+            item = self.process_entry(entry)
+            if item is not None:
+                processed.append(item)
+
+        deduped = self.deduplicate(processed)
+
+        ranked = sorted(
+            deduped,
+            key=lambda x: (
+                x.impact_score,
+                x.published or datetime.min.replace(tzinfo=timezone.utc)
+            ),
+            reverse=True
+        )
+        return ranked
+
+    def process_entry(self, entry: dict) -> Optional[NewsItem]:
+        title = clean_text(entry.get("title", ""))
+        summary = clean_text(entry.get("summary", entry.get("description", "")))
+        link = entry.get("link", "")
+        source = entry.get("_feed_title", "Unknown Source")
+        published = parse_published(entry)
+
+        full_text = f"{title}. {summary}".lower()
+
+        # Hard reject obvious noise
+        if contains_any(full_text, NOISE_PATTERNS):
+            return None
+
+        tickers = self.find_tickers(full_text)
+        sectors = self.find_sectors(full_text, tickers)
+
+        category, tier, sentiment, reasons, score = self.classify_item(
+            title=title,
+            summary=summary,
+            tickers=tickers,
+            sectors=sectors
+        )
+
+        # Final strict importance filter
+        if not self.is_important(full_text, tickers, sectors, category, tier, score):
+            return None
+
+        return NewsItem(
+            title=title,
+            summary=summary,
+            link=link,
+            source=source,
+            published=published,
+            tickers=tickers,
+            sectors=sectors,
+            category=category,
+            tier=tier,
+            sentiment=sentiment,
+            impact_score=round(score, 2),
+            reasons=reasons
+        )
+
+    def find_tickers(self, text: str) -> List[str]:
+        hits = []
+        for ticker in self.watchlist.union(self.quality_stocks) if isinstance(self.watchlist, set) else list(set(self.watchlist).union(self.quality_stocks)):
+            patterns = [
+                rf"\b{re.escape(ticker.lower())}\b",
+                rf"\({re.escape(ticker.lower())}\)",
+                rf"\b{re.escape(ticker.lower())}:"
+            ]
+            if any(re.search(p, text) for p in patterns):
+                hits.append(ticker)
+        return sorted(set(hits))
+
+    def find_sectors(self, text: str, tickers: List[str]) -> List[str]:
+        sectors = set()
+
+        for ticker in tickers:
+            sector = self.ticker_to_sector.get(ticker)
+            if sector:
+                sectors.add(sector)
+
+        for sector, keywords in SECTOR_KEYWORDS.items():
+            if any(k.lower() in text for k in keywords):
+                sectors.add(sector)
+
+        return sorted(sectors)
+
+    def classify_item(
+        self,
+        title: str,
+        summary: str,
+        tickers: List[str],
+        sectors: List[str]
+    ) -> Tuple[str, str, str, List[str], float]:
+        text = f"{title}. {summary}".lower()
+        reasons: List[str] = []
+        score = 0.0
+        sentiment = "neutral"
+        category = "company"
+        tier = "LOW PRIORITY"
+
+        macro_hits = matched_keywords(text, IMPORTANT_MACRO)
+        fed_hits = matched_keywords(text, IMPORTANT_FED)
+        analyst_hits = matched_keywords(text, IMPORTANT_ANALYST)
+        company_hits = matched_keywords(text, IMPORTANT_COMPANY)
+        sector_hits = matched_keywords(text, IMPORTANT_SECTOR)
+
+        # Macro / Fed
+        if macro_hits:
+            category = "macro"
+            tier = "MARKET MOVING"
+            score += 6.0
+            reasons.append("Macro data event: " + ", ".join(macro_hits[:4]))
+
+        if fed_hits:
+            category = "macro"
+            tier = "MARKET MOVING"
+            score += 7.0
+            reasons.append("Fed-related event: " + ", ".join(fed_hits[:4]))
+
+        # Analyst
+        if analyst_hits and tickers:
+            category = "analyst"
+            tier = "ACTIONABLE"
+            score += 5.5
+            reasons.append("Analyst action on tracked stock: " + ", ".join(analyst_hits[:4]))
+
+        # Company-moving
+        if company_hits and tickers:
+            category = "company"
+            tier = "ACTIONABLE"
+            score += 5.0
+            reasons.append("Important company event: " + ", ".join(company_hits[:4]))
+
+        # Sector-moving
+        if sector_hits and sectors and tier == "LOW PRIORITY":
+            category = "sector"
+            tier = "SECTOR SIGNAL"
+            score += 4.5
+            reasons.append("Sector signal: " + ", ".join(sector_hits[:4]))
+
+        # Mentioning good stocks matters
+        quality_hits = [t for t in tickers if t in self.quality_stocks]
+        if quality_hits:
+            score += 2.5
+            reasons.append("Mentions quality stock(s): " + ", ".join(quality_hits[:5]))
+
+        # Mentioning watchlist matters more
+        watch_hits = [t for t in tickers if t in self.watchlist]
+        if watch_hits:
+            score += 2.0
+            reasons.append("Mentions watchlist ticker(s): " + ", ".join(watch_hits[:5]))
+
+        # Sector overlap
+        if sectors:
+            score += 1.5
+            reasons.append("Touches tracked sector(s): " + ", ".join(sectors[:4]))
+
+        # Strong sector-without-ticker signal
+        if sectors and sector_hits and not tickers:
+            score += 1.5
+            if tier == "LOW PRIORITY":
+                tier = "SECTOR SIGNAL"
+                category = "sector"
+            reasons.append("Early sector signal without ticker mention")
+
+        # Sentiment
+        bullish_words = [
+            "beat", "raises guidance", "surge", "strong demand", "upside",
+            "upgrade", "raised price target", "bullish", "outperform"
+        ]
+        bearish_words = [
+            "miss", "cuts guidance", "weak demand", "investigation",
+            "downgrade", "cut price target", "bearish", "underperform"
+        ]
+
+        bullish_count = sum(1 for x in bullish_words if x in text)
+        bearish_count = sum(1 for x in bearish_words if x in text)
+
+        if bullish_count > bearish_count:
+            sentiment = "bullish"
+        elif bearish_count > bullish_count:
+            sentiment = "bearish"
+
+        # Extra score for clearly market moving
+        if tier == "MARKET MOVING":
+            score += 1.5
+        elif tier == "ACTIONABLE":
+            score += 1.0
+        elif tier == "SECTOR SIGNAL":
+            score += 0.5
+
+        return category, tier, sentiment, reasons, score
+
+    def is_important(
+        self,
+        text: str,
+        tickers: List[str],
+        sectors: List[str],
+        category: str,
+        tier: str,
+        score: float
+    ) -> bool:
+        # Highest-priority macro items
+        if contains_any(text, IMPORTANT_MACRO + IMPORTANT_FED):
+            return score >= 6.0
+
+        # Analyst actions only matter if tied to tracked / quality names
+        if category == "analyst":
+            return bool(tickers) and score >= 7.0
+
+        # Company news only if on tracked / quality stocks
+        if category == "company":
+            return bool(tickers) and score >= 7.0
+
+        # Sector signals only if relevant and meaningful
+        if category == "sector":
+            return bool(sectors) and score >= 6.0
+
+        # Fallback
+        return tier in {"MARKET MOVING", "ACTIONABLE", "SECTOR SIGNAL"} and score >= 7.0
+
+    def deduplicate(self, items: List[NewsItem]) -> List[NewsItem]:
+        seen: Dict[str, NewsItem] = {}
+        for item in items:
+            key = normalize_title(item.title)
+            if key not in seen:
+                seen[key] = item
+            else:
+                if item.impact_score > seen[key].impact_score:
+                    seen[key] = item
+        return list(seen.values())
+
+
+# ============================================================
+# OUTPUT
+# ============================================================
+
+def print_report(items: List[NewsItem], top_n: int = 50) -> None:
     print("\n" + "=" * 120)
-    print("RANKED STOCK NEWS WATCHLIST")
+    print("IMPORTANT STOCK NEWS")
     print("=" * 120)
 
     if not items:
-        print("No relevant items found.")
+        print("No important items found.")
         return
 
     for idx, item in enumerate(items[:top_n], 1):
         print(f"\n[{idx}] {item.title}")
-        print(f"    Source     : {item.source}")
-        print(f"    Published  : {fmt_dt(item.published)}")
+        print(f"    Tier       : {item.tier}")
         print(f"    Category   : {item.category}")
         print(f"    Sentiment  : {item.sentiment}")
         print(f"    Score      : {item.impact_score}")
+        print(f"    Published  : {fmt_dt(item.published)}")
+        print(f"    Source     : {item.source}")
         print(f"    Tickers    : {', '.join(item.tickers) if item.tickers else '-'}")
         print(f"    Sectors    : {', '.join(item.sectors) if item.sectors else '-'}")
         print(f"    Reasons    : {' | '.join(item.reasons)}")
-        print(f"    Summary    : {item.summary[:400]}{'...' if len(item.summary) > 400 else ''}")
+        print(f"    Summary    : {item.summary[:300]}{'...' if len(item.summary) > 300 else ''}")
         print(f"    Link       : {item.link}")
 
 
-def group_by_ticker(items: List[NewsItem]) -> Dict[str, List[NewsItem]]:
-    out: Dict[str, List[NewsItem]] = {}
+def split_by_tier(items: List[NewsItem]) -> Dict[str, List[NewsItem]]:
+    grouped = {
+        "MARKET MOVING": [],
+        "ACTIONABLE": [],
+        "SECTOR SIGNAL": [],
+    }
     for item in items:
-        targets = item.tickers if item.tickers else [f"SECTOR::{s}" for s in item.sectors] if item.sectors else ["MACRO"]
-        for target in targets:
-            out.setdefault(target, []).append(item)
-    return out
+        if item.tier in grouped:
+            grouped[item.tier].append(item)
+    return grouped
 
 
-def print_ticker_view(items: List[NewsItem]) -> None:
-    grouped = group_by_ticker(items)
-    print("\n" + "=" * 120)
-    print("TICKER / SECTOR VIEW")
-    print("=" * 120)
+def generate_html_dashboard(items: List[NewsItem], output_file: str = "index.html") -> None:
+    grouped = split_by_tier(items)
 
-    for key in sorted(grouped.keys()):
-        sub = sorted(grouped[key], key=lambda x: x.impact_score, reverse=True)[:5]
-        print(f"\n{key}")
-        for item in sub:
-            print(f"  - ({item.impact_score}) [{item.sentiment}] {item.title}")
+    html_parts = ["""
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Important Stock News Dashboard</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+            margin: 0;
+            padding: 10px;
+        }
+        h1 {
+            margin: 0 0 10px 0;
+            font-size: 20px;
+        }
+        h2 {
+            margin: 14px 0 8px 0;
+            font-size: 15px;
+            color: #93c5fd;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
+            gap: 8px;
+        }
+        .card {
+            background: #1e293b;
+            border-radius: 8px;
+            padding: 8px 10px;
+            line-height: 1.2;
+        }
+        .title {
+            font-size: 13px;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+        .meta {
+            font-size: 11px;
+            color: #cbd5e1;
+            margin: 2px 0;
+        }
+        .summary {
+            font-size: 11px;
+            margin-top: 4px;
+            color: #e2e8f0;
+        }
+        .bullish { color: #22c55e; font-weight: 700; }
+        .bearish { color: #ef4444; font-weight: 700; }
+        .neutral { color: #facc15; font-weight: 700; }
+        a {
+            color: #38bdf8;
+            text-decoration: none;
+            font-size: 11px;
+        }
+        .empty {
+            font-size: 11px;
+            color: #94a3b8;
+            padding: 4px 0 8px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>?? Important Stock News Dashboard</h1>
+"""]
 
+    for section_name in ["MARKET MOVING", "ACTIONABLE", "SECTOR SIGNAL"]:
+        section_items = grouped.get(section_name, [])
+        html_parts.append(f"<h2>{html_lib.escape(section_name)}</h2>")
 
-# ============================================================
-# Optional extensions
-# ============================================================
-def build_yahoo_symbol_rss(ticker: str) -> str:
-    # Yahoo's feed patterns can vary over time. Included as a helper only.
-    return f"https://finance.yahoo.com/rss/headline?s={quote_plus(ticker)}"
+        if not section_items:
+            html_parts.append("<div class='empty'>No items in this section.</div>")
+            continue
 
+        html_parts.append("<div class='grid'>")
+        for item in section_items[:40]:
+            safe_title = html_lib.escape(item.title)
+            safe_source = html_lib.escape(item.source)
+            safe_summary = html_lib.escape(item.summary[:180])
+            safe_link = html_lib.escape(item.link, quote=True)
+            safe_tickers = html_lib.escape(", ".join(item.tickers) if item.tickers else "-")
+            safe_sectors = html_lib.escape(", ".join(item.sectors) if item.sectors else "-")
+            safe_tier = html_lib.escape(item.tier)
+            safe_time = html_lib.escape(fmt_dt(item.published))
+            sentiment_class = item.sentiment if item.sentiment in {"bullish", "bearish", "neutral"} else "neutral"
 
-def build_seekingalpha_symbol_rss(ticker: str) -> str:
-    # Pattern may vary; included as a helper only.
-    return f"https://seekingalpha.com/api/sa/combined/{quote_plus(ticker)}.xml"
+            html_parts.append(f"""
+            <div class='card'>
+                <div class='title'>{safe_title}</div>
+                <div class='meta'>{safe_source} | {safe_time}</div>
+                <div class='meta'>Tier: {safe_tier} | Score: {item.impact_score} | <span class='{sentiment_class}'>{html_lib.escape(item.sentiment)}</span></div>
+                <div class='meta'>Tickers: {safe_tickers}</div>
+                <div class='meta'>Sectors: {safe_sectors}</div>
+                <div class='summary'>{safe_summary}</div>
+                <a href='{safe_link}' target='_blank'>Read more</a>
+            </div>
+            """)
 
+        html_parts.append("</div>")
 
-def add_symbol_specific_feeds(base_feeds: List[str], watchlist: List[str]) -> List[str]:
-    feeds = list(base_feeds)
-    for t in watchlist:
-        feeds.append(build_yahoo_symbol_rss(t))
-    return feeds
-
-
-# ============================================================
-# HTML OUTPUT
-# ============================================================
-def generate_html_dashboard(items: List[NewsItem], output_file: str = "index.html"):
-    html = ["""
-    <html>
-    <head>
-        <title>Stock News Dashboard</title>
-        <style>
-            body { font-family: Arial, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; padding: 10px; }
-            h1 { margin: 0 0 10px 0; font-size: 20px; }
-            .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 8px; }
-            .card { background: #1e293b; padding: 8px 10px; margin: 0; border-radius: 8px; line-height: 1.2; }
-            .title { font-size: 13px; font-weight: 700; margin-bottom: 4px; }
-            .meta { font-size: 11px; color: #cbd5e1; margin: 2px 0; }
-            .summary { font-size: 11px; color: #e2e8f0; margin: 4px 0; }
-            .bullish { color: #22c55e; font-weight: 700; }
-            .bearish { color: #ef4444; font-weight: 700; }
-            .neutral { color: #facc15; font-weight: 700; }
-            a { color: #38bdf8; text-decoration: none; font-size: 11px; }
-        </style>
-    </head>
-    <body>
-        <h1>📊 Stock News Dashboard</h1>
-        <div class='grid'>
-    """]
-
-    for item in items[:150]:
-        sentiment_class = item.sentiment
-        html.append(f"""
-        <div class='card'>
-            <div class='title'>{item.title}</div>
-            <div class='meta'>{item.source} | Score: {item.impact_score} | <span class='{sentiment_class}'>{item.sentiment}</span></div>
-            <div class='meta'>Tickers: {', '.join(item.tickers) if item.tickers else '-'} | Sectors: {', '.join(item.sectors) if item.sectors else '-'}</div>
-            <div class='summary'>{item.summary[:180]}</div>
-            <a href='{item.link}' target='_blank'>Read more</a>
-        </div>
-        """)
-
-    html.append("</body></html>")
-    
-    with open(output_file, "w", encoding="utf-8") as f:
-    	f.write("\n".join(html))
+   html.append("</body></html>")
+   
+   with open(output_file, "w", encoding="utf-8") as f:
+   	f.write("\n".join(html))
 
     print(f"HTML dashboard generated: {output_file}")
 
@@ -523,20 +636,10 @@ def generate_html_dashboard(items: List[NewsItem], output_file: str = "index.htm
 # ============================================================
 # MAIN
 # ============================================================
+
 if __name__ == "__main__":
-    # Uncomment this if you want ticker-specific RSS added automatically.
-    # all_feeds = add_symbol_specific_feeds(RSS_FEEDS, WATCHLIST)
-    all_feeds = RSS_FEEDS
-
-    agent = StockNewsAgent(
-        watchlist=WATCHLIST,
-        ticker_to_sector=TICKER_TO_SECTOR,
-        rss_feeds=all_feeds,
-    )
-
+    agent = StockNewsAgent()
     results = agent.run()
-    print_report(results, top_n=30)
-    print_ticker_view(results)
 
-    # Generate HTML dashboard
-    generate_html_dashboard(results)
+    print_report(results, top_n=50)
+    generate_html_dashboard(results, output_file="index.html")
