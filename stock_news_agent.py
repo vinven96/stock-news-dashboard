@@ -626,8 +626,9 @@ def generate_html_dashboard(items: List[NewsItem], output_file: str = "index.htm
         html_parts.append("</div>")
 
    	html.append("</body></html>")
+   	
    	with open(output_file, "w", encoding="utf-8") as f:
-   		f.write("\n".join(html))
+   	    f.write("\n".join(html))
 
     print(f"HTML dashboard generated: {output_file}")
 
