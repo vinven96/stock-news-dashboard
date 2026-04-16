@@ -17,7 +17,6 @@ WATCHLIST = [
     "TSLA", "NFLX", "JPM", "LLY", "SMCI", "ANET"
 ]
 
-# Bigger names / higher quality names you want to prioritize
 QUALITY_STOCKS = {
     "NVDA", "AMD", "MU", "AVGO", "LITE", "AAOI",
     "AAPL", "MSFT", "AMZN", "META", "GOOGL",
@@ -230,6 +229,7 @@ class StockNewsAgent:
         self.watchlist = [t.upper() for t in WATCHLIST]
         self.quality_stocks = {t.upper() for t in QUALITY_STOCKS}
         self.ticker_to_sector = {k.upper(): v for k, v in TICKER_TO_SECTOR.items()}
+        self.all_tickers = sorted(set(self.watchlist).union(self.quality_stocks))
 
     def fetch_all_feeds(self) -> List[dict]:
         entries = []
@@ -275,7 +275,6 @@ class StockNewsAgent:
 
         full_text = f"{title}. {summary}".lower()
 
-        # Hard reject obvious noise
         if contains_any(full_text, NOISE_PATTERNS):
             return None
 
@@ -289,7 +288,6 @@ class StockNewsAgent:
             sectors=sectors
         )
 
-        # Final strict importance filter
         if not self.is_important(full_text, tickers, sectors, category, tier, score):
             return None
 
@@ -310,7 +308,7 @@ class StockNewsAgent:
 
     def find_tickers(self, text: str) -> List[str]:
         hits = []
-        for ticker in self.watchlist.union(self.quality_stocks) if isinstance(self.watchlist, set) else list(set(self.watchlist).union(self.quality_stocks)):
+        for ticker in self.all_tickers:
             patterns = [
                 rf"\b{re.escape(ticker.lower())}\b",
                 rf"\({re.escape(ticker.lower())}\)",
@@ -354,7 +352,6 @@ class StockNewsAgent:
         company_hits = matched_keywords(text, IMPORTANT_COMPANY)
         sector_hits = matched_keywords(text, IMPORTANT_SECTOR)
 
-        # Macro / Fed
         if macro_hits:
             category = "macro"
             tier = "MARKET MOVING"
@@ -367,45 +364,38 @@ class StockNewsAgent:
             score += 7.0
             reasons.append("Fed-related event: " + ", ".join(fed_hits[:4]))
 
-        # Analyst
         if analyst_hits and tickers:
             category = "analyst"
             tier = "ACTIONABLE"
             score += 5.5
             reasons.append("Analyst action on tracked stock: " + ", ".join(analyst_hits[:4]))
 
-        # Company-moving
         if company_hits and tickers:
             category = "company"
             tier = "ACTIONABLE"
             score += 5.0
             reasons.append("Important company event: " + ", ".join(company_hits[:4]))
 
-        # Sector-moving
         if sector_hits and sectors and tier == "LOW PRIORITY":
             category = "sector"
             tier = "SECTOR SIGNAL"
             score += 4.5
             reasons.append("Sector signal: " + ", ".join(sector_hits[:4]))
 
-        # Mentioning good stocks matters
         quality_hits = [t for t in tickers if t in self.quality_stocks]
         if quality_hits:
             score += 2.5
             reasons.append("Mentions quality stock(s): " + ", ".join(quality_hits[:5]))
 
-        # Mentioning watchlist matters more
         watch_hits = [t for t in tickers if t in self.watchlist]
         if watch_hits:
             score += 2.0
             reasons.append("Mentions watchlist ticker(s): " + ", ".join(watch_hits[:5]))
 
-        # Sector overlap
         if sectors:
             score += 1.5
             reasons.append("Touches tracked sector(s): " + ", ".join(sectors[:4]))
 
-        # Strong sector-without-ticker signal
         if sectors and sector_hits and not tickers:
             score += 1.5
             if tier == "LOW PRIORITY":
@@ -413,7 +403,6 @@ class StockNewsAgent:
                 category = "sector"
             reasons.append("Early sector signal without ticker mention")
 
-        # Sentiment
         bullish_words = [
             "beat", "raises guidance", "surge", "strong demand", "upside",
             "upgrade", "raised price target", "bullish", "outperform"
@@ -431,7 +420,6 @@ class StockNewsAgent:
         elif bearish_count > bullish_count:
             sentiment = "bearish"
 
-        # Extra score for clearly market moving
         if tier == "MARKET MOVING":
             score += 1.5
         elif tier == "ACTIONABLE":
@@ -450,23 +438,18 @@ class StockNewsAgent:
         tier: str,
         score: float
     ) -> bool:
-        # Highest-priority macro items
         if contains_any(text, IMPORTANT_MACRO + IMPORTANT_FED):
             return score >= 6.0
 
-        # Analyst actions only matter if tied to tracked / quality names
         if category == "analyst":
             return bool(tickers) and score >= 7.0
 
-        # Company news only if on tracked / quality stocks
         if category == "company":
             return bool(tickers) and score >= 7.0
 
-        # Sector signals only if relevant and meaningful
         if category == "sector":
             return bool(sectors) and score >= 6.0
 
-        # Fallback
         return tier in {"MARKET MOVING", "ACTIONABLE", "SECTOR SIGNAL"} and score >= 7.0
 
     def deduplicate(self, items: List[NewsItem]) -> List[NewsItem]:
@@ -588,7 +571,7 @@ def generate_html_dashboard(items: List[NewsItem], output_file: str = "index.htm
     </style>
 </head>
 <body>
-    <h1>?? Important Stock News Dashboard</h1>
+    <h1>Important Stock News Dashboard</h1>
 """]
 
     for section_name in ["MARKET MOVING", "ACTIONABLE", "SECTOR SIGNAL"]:
@@ -600,6 +583,7 @@ def generate_html_dashboard(items: List[NewsItem], output_file: str = "index.htm
             continue
 
         html_parts.append("<div class='grid'>")
+
         for item in section_items[:40]:
             safe_title = html_lib.escape(item.title)
             safe_source = html_lib.escape(item.source)
@@ -623,12 +607,12 @@ def generate_html_dashboard(items: List[NewsItem], output_file: str = "index.htm
             </div>
             """)
 
-        html.append("</div>")
-	html.append("</body></html>")
-	
-	with open(output_file, "w", encoding="utf-8") as f:
-	    f.write("\n".join(html))
-	
+        html_parts.append("</div>")
+
+    html_parts.append("</body></html>")
+
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write("\n".join(html_parts))
 
     print(f"HTML dashboard generated: {output_file}")
 
