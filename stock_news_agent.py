@@ -320,7 +320,6 @@ class StockNewsAgent:
 
         full_text = f"{title}. {summary}".lower()
 
-        # Only reject obvious junk if it is NOT relevant to your stocks/sectors/macro
         if contains_any(full_text, NOISE_PATTERNS):
             if not any(t.lower() in full_text for t in self.all_tickers):
                 sector_tmp = extract_sector_hits(full_text)
@@ -402,7 +401,7 @@ class StockNewsAgent:
         score = 0.0
         sentiment = "neutral"
         category = "general"
-        tier = "LOW PRIORITY"
+        tier = "MORE RELEVANT NEWS"
 
         macro_hits = matched_keywords(text, IMPORTANT_MACRO)
         fed_hits = matched_keywords(text, IMPORTANT_FED)
@@ -434,7 +433,7 @@ class StockNewsAgent:
             score += 3.5
             reasons.append("Important company event: " + ", ".join(company_hits[:4]))
 
-        if sector_signal_hits and sectors and tier == "LOW PRIORITY":
+        if sector_signal_hits and sectors and tier == "MORE RELEVANT NEWS":
             category = "sector"
             tier = "SECTOR SIGNAL"
             score += 3.0
@@ -456,25 +455,28 @@ class StockNewsAgent:
 
         if sector_hit_map and not tickers:
             score += 1.5
-            if tier == "LOW PRIORITY":
+            if tier == "MORE RELEVANT NEWS":
                 tier = "SECTOR SIGNAL"
                 category = "sector"
             reasons.append("Sector theme without ticker mention")
 
-        # Broad relevance boost
         if tickers and score < 4.0:
             score += 1.5
-            if tier == "LOW PRIORITY":
+            if tier == "MORE RELEVANT NEWS":
                 tier = "ACTIONABLE"
                 category = "company"
             reasons.append("Broad ticker relevance")
 
         if sectors and score < 4.0:
             score += 1.0
-            if tier == "LOW PRIORITY":
+            if tier == "MORE RELEVANT NEWS":
                 tier = "SECTOR SIGNAL"
                 category = "sector"
             reasons.append("Broad sector relevance")
+
+        if not tickers and not sectors and contains_any(text, IMPORTANT_ANALYST + IMPORTANT_COMPANY):
+            score += 1.0
+            reasons.append("General important company/analyst headline")
 
         bullish_words = [
             "beat", "raises guidance", "surge", "strong demand", "upside",
@@ -534,7 +536,7 @@ class StockNewsAgent:
 # OUTPUT
 # ============================================================
 
-def print_report(items: List[NewsItem], top_n: int = 150) -> None:
+def print_report(items: List[NewsItem], top_n: int = 200) -> None:
     print("\n" + "=" * 120)
     print("IMPORTANT STOCK NEWS")
     print("=" * 120)
@@ -563,12 +565,13 @@ def split_by_tier(items: List[NewsItem]) -> Dict[str, List[NewsItem]]:
         "MARKET MOVING": [],
         "ACTIONABLE": [],
         "SECTOR SIGNAL": [],
+        "MORE RELEVANT NEWS": [],
     }
     for item in items:
         if item.tier in grouped:
             grouped[item.tier].append(item)
         else:
-            grouped["SECTOR SIGNAL"].append(item)
+            grouped["MORE RELEVANT NEWS"].append(item)
     return grouped
 
 
@@ -642,7 +645,7 @@ def generate_html_dashboard(items: List[NewsItem], output_file: str = "index.htm
     <h1>Important Stock News Dashboard</h1>
 """]
 
-    for section_name in ["MARKET MOVING", "ACTIONABLE", "SECTOR SIGNAL"]:
+    for section_name in ["MARKET MOVING", "ACTIONABLE", "SECTOR SIGNAL", "MORE RELEVANT NEWS"]:
         section_items = grouped.get(section_name, [])
         html_parts.append(f"<h2>{html_lib.escape(section_name)}</h2>")
 
@@ -693,5 +696,5 @@ if __name__ == "__main__":
     agent = StockNewsAgent()
     results = agent.run()
 
-    print_report(results, top_n=150)
+    print_report(results, top_n=200)
     generate_html_dashboard(results, output_file="index.html")
