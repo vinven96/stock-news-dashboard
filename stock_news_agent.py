@@ -644,8 +644,7 @@ def split_by_tier(items: List[NewsItem]) -> Dict[str, List[NewsItem]]:
             grouped["MORE RELEVANT NEWS"].append(item)
     return grouped
 
-
-def generate_html_dashboard(items: List[NewsItem], output_file: str = "index.html") -> None:
+def generate_html_dashboard(items: List[NewsItem], narrative: str = "", output_file: str = "index.html") -> None:
     grouped = split_by_tier(items)
 
     html_parts = ["""
@@ -653,7 +652,17 @@ def generate_html_dashboard(items: List[NewsItem], output_file: str = "index.htm
 <head>
     <meta charset="utf-8">
     <title>Important Stock News Dashboard</title>
+    <div class="narrative">{html_lib.escape(narrative)}</div>
     <style>
+    	.narrative {
+        	background: #111827;
+        	border-radius: 8px;
+        	padding: 10px;
+        	margin-bottom: 10px;
+        	font-size: 11px;
+        	white-space: pre-wrap;
+        	line-height: 1.3;
+	}
         body {
             font-family: Arial, sans-serif;
             background: #0f172a;
@@ -826,4 +835,5 @@ if __name__ == "__main__":
     print("=" * 120)
     print(narrative)
 
-    generate_html_dashboard(results, output_file="index.html")
+    narrative = build_llm_narrative(results)
+    generate_html_dashboard(results, narrative=narrative, output_file="index.html")
