@@ -64,6 +64,7 @@ TICKER_TO_SECTOR = {
     "INTC": "Semiconductors",
 }
 
+# Avoid super-short ambiguous terms unless matched as whole words
 SECTOR_KEYWORDS = {
     "Semiconductors": [
         "semiconductor", "chip", "chips", "gpu", "ai chip", "foundry",
@@ -80,13 +81,13 @@ SECTOR_KEYWORDS = {
         "cloud", "software", "saas", "enterprise software", "enterprise ai"
     ],
     "Internet / Cloud": [
-        "e-commerce", "internet", "cloud", "online ads", "digital advertising"
+        "e-commerce", "internet", "online retail", "aws"
     ],
     "Internet / Advertising": [
         "advertising", "digital ads", "ad spend", "internet platform"
     ],
     "EV / Auto": [
-        "ev", "electric vehicle", "battery", "auto sales", "autonomous"
+        "electric vehicle", "battery", "auto sales", "autonomous", "automaker"
     ],
     "Financials": [
         "bank", "banking", "loan growth", "credit quality", "net interest income"
@@ -244,6 +245,28 @@ def fmt_dt(dt: Optional[datetime]) -> str:
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
+def keyword_present(text: str, keyword: str) -> bool:
+    """
+    Use whole-word matching for short keywords and substring for longer phrases.
+    """
+    keyword = keyword.lower().strip()
+    text = text.lower()
+
+    if len(keyword) <= 3 and " " not in keyword:
+        return re.search(rf"\b{re.escape(keyword)}\b", text) is not None
+
+    return keyword in text
+
+
+def extract_sector_hits(text: str) -> Dict[str, List[str]]:
+    hits: Dict[str, List[str]] = {}
+    for sector, keywords in SECTOR_KEYWORDS.items():
+        matched = [k for k in keywords if keyword_present(text, k)]
+        if matched:
+            hits[sector] = matched
+    return hits
+
+
 # ============================================================
 # AGENT
 # ============================================================
@@ -303,16 +326,25 @@ class StockNewsAgent:
             return None
 
         tickers = self.find_tickers(full_text)
-        sectors = self.find_sectors(full_text, tickers)
+        sector_hit_map = extract_sector_hits(full_text)
+        sectors = self.find_sectors_from_hits(tickers, sector_hit_map)
 
         category, tier, sentiment, reasons, score = self.classify_item(
             title=title,
             summary=summary,
             tickers=tickers,
-            sectors=sectors
+            sectors=sectors,
+            sector_hit_map=sector_hit_map
         )
 
-        if not self.is_important(full_text, tickers, sectors, category, tier, score):
+        if not self.is_important(
+            text=full_text,
+            tickers=tickers,
+            sectors=sectors,
+            category=category,
+            tier=tier,
+            score=score
+        ):
             return None
 
         return NewsItem(
@@ -342,7 +374,7 @@ class StockNewsAgent:
                 hits.append(ticker)
         return sorted(set(hits))
 
-    def find_sectors(self, text: str, tickers: List[str]) -> List[str]:
+    def find_sectors_from_hits(self, tickers: List[str], sector_hit_map: Dict[str, List[str]]) -> List[str]:
         sectors = set()
 
         for ticker in tickers:
@@ -350,9 +382,8 @@ class StockNewsAgent:
             if sector:
                 sectors.add(sector)
 
-        for sector, keywords in SECTOR_KEYWORDS.items():
-            if any(k.lower() in text for k in keywords):
-                sectors.add(sector)
+        for sector in sector_hit_map.keys():
+            sectors.add(sector)
 
         return sorted(sectors)
 
@@ -361,54 +392,51 @@ class StockNewsAgent:
         title: str,
         summary: str,
         tickers: List[str],
-        sectors: List[str]
+        sectors: List[str],
+        sector_hit_map: Dict[str, List[str]]
     ) -> Tuple[str, str, str, List[str], float]:
         text = f"{title}. {summary}".lower()
         reasons: List[str] = []
         score = 0.0
         sentiment = "neutral"
-        category = "company"
+        category = "general"
         tier = "LOW PRIORITY"
 
         macro_hits = matched_keywords(text, IMPORTANT_MACRO)
         fed_hits = matched_keywords(text, IMPORTANT_FED)
         analyst_hits = matched_keywords(text, IMPORTANT_ANALYST)
         company_hits = matched_keywords(text, IMPORTANT_COMPANY)
-        sector_hits = matched_keywords(text, IMPORTANT_SECTOR)
+        sector_signal_hits = matched_keywords(text, IMPORTANT_SECTOR)
 
-        # Macro / Fed
         if macro_hits:
             category = "macro"
             tier = "MARKET MOVING"
-            score += 5.5
+            score += 5.0
             reasons.append("Macro data event: " + ", ".join(macro_hits[:4]))
 
         if fed_hits:
             category = "macro"
             tier = "MARKET MOVING"
-            score += 6.0
+            score += 5.5
             reasons.append("Fed-related event: " + ", ".join(fed_hits[:4]))
 
-        # Analyst
         if analyst_hits and tickers:
             category = "analyst"
             tier = "ACTIONABLE"
-            score += 4.5
-            reasons.append("Analyst action on tracked stock: " + ", ".join(analyst_hits[:4]))
+            score += 4.0
+            reasons.append("Analyst action: " + ", ".join(analyst_hits[:4]))
 
-        # Company
         if company_hits and tickers:
             category = "company"
             tier = "ACTIONABLE"
             score += 4.0
             reasons.append("Important company event: " + ", ".join(company_hits[:4]))
 
-        # Sector
-        if sector_hits and sectors and tier == "LOW PRIORITY":
+        if sector_signal_hits and sectors and tier == "LOW PRIORITY":
             category = "sector"
             tier = "SECTOR SIGNAL"
-            score += 4.0
-            reasons.append("Sector signal: " + ", ".join(sector_hits[:4]))
+            score += 3.5
+            reasons.append("Sector signal: " + ", ".join(sector_signal_hits[:4]))
 
         quality_hits = [t for t in tickers if t in self.quality_stocks]
         if quality_hits:
@@ -424,12 +452,19 @@ class StockNewsAgent:
             score += 1.5
             reasons.append("Touches tracked sector(s): " + ", ".join(sectors[:4]))
 
-        if sectors and sector_hits and not tickers:
-            score += 2.0
+        if sector_hit_map and not tickers:
+            score += 1.5
             if tier == "LOW PRIORITY":
                 tier = "SECTOR SIGNAL"
                 category = "sector"
-            reasons.append("Early sector signal without ticker mention")
+            reasons.append("Sector theme without ticker mention")
+
+        # Important broad story mentioning a quality ticker but not classic company keywords
+        if tickers and tier == "LOW PRIORITY":
+            category = "company"
+            tier = "ACTIONABLE"
+            score += 2.5
+            reasons.append("Broad story mentioning tracked/quality ticker")
 
         bullish_words = [
             "beat", "raises guidance", "surge", "strong demand", "upside",
@@ -467,18 +502,18 @@ class StockNewsAgent:
         score: float
     ) -> bool:
         if contains_any(text, IMPORTANT_MACRO + IMPORTANT_FED):
-            return score >= 4.0
+            return score >= 4.5
 
         if category == "analyst":
-            return bool(tickers) and score >= 5.5
+            return bool(tickers) and score >= 4.5
 
         if category == "company":
-            return bool(tickers) and score >= 5.0
+            return bool(tickers) and score >= 4.0
 
         if category == "sector":
-            return bool(sectors) and score >= 4.5
+            return bool(sectors) and score >= 4.0
 
-        return score >= 5.0
+        return score >= 4.5
 
     def deduplicate(self, items: List[NewsItem]) -> List[NewsItem]:
         seen: Dict[str, NewsItem] = {}
@@ -496,7 +531,7 @@ class StockNewsAgent:
 # OUTPUT
 # ============================================================
 
-def print_report(items: List[NewsItem], top_n: int = 80) -> None:
+def print_report(items: List[NewsItem], top_n: int = 100) -> None:
     print("\n" + "=" * 120)
     print("IMPORTANT STOCK NEWS")
     print("=" * 120)
@@ -612,7 +647,7 @@ def generate_html_dashboard(items: List[NewsItem], output_file: str = "index.htm
 
         html_parts.append("<div class='grid'>")
 
-        for item in section_items[:80]:
+        for item in section_items[:100]:
             safe_title = html_lib.escape(item.title)
             safe_source = html_lib.escape(item.source)
             safe_summary = html_lib.escape(item.summary[:150])
@@ -653,5 +688,5 @@ if __name__ == "__main__":
     agent = StockNewsAgent()
     results = agent.run()
 
-    print_report(results, top_n=80)
+    print_report(results, top_n=100)
     generate_html_dashboard(results, output_file="index.html")
