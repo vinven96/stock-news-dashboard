@@ -80,6 +80,8 @@ ALLOWED_THEMES = {
     "Quantum Computing",
     "Drug Approvals",
     "Economic Indicators",
+    "Insider / SEC Activity",
+    "Institutional Activity",
 }
 
 THEME_KEYWORDS = {
@@ -112,6 +114,17 @@ THEME_KEYWORDS = {
         "ism services", "treasury yield", "bond yields", "economic forecast",
         "growth forecast", "recession", "fed", "fomc", "powell",
         "interest rates", "rate cuts", "rate hikes"
+    ],
+    "Insider / SEC Activity": [
+        "form 4", "insider buying", "insider selling", "insider purchase",
+        "insider sale", "schedule 13d", "schedule 13g", "beneficial ownership",
+        "8-k", "current report", "sec filing", "filed with the sec"
+    ],
+    "Institutional Activity": [
+        "13f", "form 13f", "13f-hr", "institutional ownership",
+        "hedge fund", "asset manager", "stake increase", "stake reduction",
+        "position increase", "position decrease", "institutional buying",
+        "institutional selling"
     ]
 }
 
@@ -121,9 +134,11 @@ BROAD_RSS_FEEDS = [
     "https://www.cnbc.com/id/100003114/device/rss/rss.html",
     "https://finance.yahoo.com/news/rssindex",
     "http://feeds.marketwatch.com/marketwatch/topstories/",
+    "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&output=atom",
 ]
 
 MAX_ITEMS_PER_FEED = 35
+LOOKBACK_HOURS = 72
 
 IMPORTANT_MACRO = [
     "cpi", "ppi", "pce", "inflation", "nonfarm payrolls", "payrolls",
@@ -165,6 +180,22 @@ IMPORTANT_THEME_SIGNALS = [
     "inventory build", "datacenter demand", "enterprise demand"
 ]
 
+SEC_KEYWORDS = [
+    "form 4", "insider", "insider buying", "insider purchase",
+    "insider selling", "insider sale",
+    "schedule 13d", "schedule 13g", "beneficial ownership",
+    "8-k", "current report",
+    "sec filing", "filed with the sec"
+]
+
+INSTITUTIONAL_KEYWORDS = [
+    "13f", "form 13f", "13f-hr", "institutional holdings",
+    "institutional ownership", "hedge fund", "asset manager",
+    "position increase", "position decrease", "stake", "fund bought",
+    "fund sold", "increased stake", "reduced stake",
+    "institutional buying", "institutional selling"
+]
+
 NOISE_PATTERNS = [
     "top stocks",
     "best stocks",
@@ -179,7 +210,13 @@ NOISE_PATTERNS = [
     "hot stock"
 ]
 
-LOOKBACK_HOURS = 72
+FILING_MEANINGS = {
+    "Form 4": "Insider trading filing showing company insiders buying or selling shares.",
+    "8-K": "Current report for major company events that shareholders should know about.",
+    "Schedule 13D": "Large active stake disclosure, often signals activist or strategic ownership.",
+    "Schedule 13G": "Large passive stake disclosure by major investors or institutions.",
+    "13F": "Quarterly institutional holdings report showing positions held by major money managers."
+}
 
 
 # ============================================================
@@ -200,6 +237,7 @@ class NewsItem:
     sentiment: str
     impact_score: float
     reasons: List[str]
+    filing_types: List[str]
 
 
 # ============================================================
@@ -274,6 +312,30 @@ def google_news_rss(query: str) -> str:
     return f"https://news.google.com/rss/search?q={quote_plus(query)}&hl=en-US&gl=US&ceid=US:en"
 
 
+def detect_filing_types(text: str) -> List[str]:
+    filing_types = []
+
+    if "form 4" in text:
+        filing_types.append("Form 4")
+    if "8-k" in text or "current report" in text:
+        filing_types.append("8-K")
+    if "schedule 13d" in text or "13d" in text:
+        filing_types.append("Schedule 13D")
+    if "schedule 13g" in text or "13g" in text:
+        filing_types.append("Schedule 13G")
+    if "13f" in text or "13f-hr" in text or "form 13f" in text:
+        filing_types.append("13F")
+
+    return sorted(set(filing_types))
+
+
+def filing_meanings_text(filing_types: List[str]) -> str:
+    if not filing_types:
+        return "-"
+    parts = [f"{ft}: {FILING_MEANINGS.get(ft, '')}" for ft in filing_types]
+    return " | ".join(parts)
+
+
 def build_dynamic_feeds() -> List[str]:
     feeds = list(BROAD_RSS_FEEDS)
 
@@ -285,16 +347,22 @@ def build_dynamic_feeds() -> List[str]:
 
     for ticker in focus_tickers:
         company = TICKER_TO_COMPANY.get(ticker, ticker)
+
         feeds.append(google_news_rss(f'"{ticker}" OR "{company}" semiconductor OR AI'))
         feeds.append(google_news_rss(f'"{ticker}" earnings OR "{company}" earnings'))
         feeds.append(google_news_rss(f'"{ticker}" analyst upgrade OR "{ticker}" analyst downgrade'))
+        feeds.append(google_news_rss(f'"{ticker}" insider buying OR "{ticker}" insider selling'))
+        feeds.append(google_news_rss(f'"{ticker}" form 4 OR "{ticker}" 8-k OR "{ticker}" 13d OR "{ticker}" 13g'))
+        feeds.append(google_news_rss(f'"{ticker}" 13f OR "{ticker}" institutional ownership OR "{ticker}" hedge fund'))
 
     theme_queries = [
         '"semiconductor industry" OR chip demand OR memory pricing OR hbm demand',
         '"artificial intelligence" OR AI infrastructure OR AI spending OR LLM',
         '"quantum computing" OR qubit OR quantum processor',
         '"FDA approval" OR drug approval OR phase 3 OR biotech trial',
-        '"CPI" OR inflation OR payrolls OR GDP OR FOMC OR economic forecast'
+        '"CPI" OR inflation OR payrolls OR GDP OR FOMC OR economic forecast',
+        '"insider buying" OR "insider selling" OR "Form 4" OR "Schedule 13D" OR "Schedule 13G" OR "8-K"',
+        '"13F" OR "institutional ownership" OR "hedge fund buying" OR "fund stake increase"'
     ]
 
     for q in theme_queries:
@@ -374,7 +442,7 @@ class StockNewsAgent:
         theme_hit_map = extract_theme_hits(full_text)
         themes = self.find_themes_from_hits(tickers, theme_hit_map)
 
-        category, tier, sentiment, reasons, score = self.classify_item(
+        category, tier, sentiment, reasons, score, filing_types = self.classify_item(
             title=title,
             summary=summary,
             tickers=tickers,
@@ -404,7 +472,8 @@ class StockNewsAgent:
             tier=tier,
             sentiment=sentiment,
             impact_score=round(score, 2),
-            reasons=reasons
+            reasons=reasons,
+            filing_types=filing_types
         )
 
     def find_tickers(self, text: str) -> List[str]:
@@ -445,19 +514,22 @@ class StockNewsAgent:
         tickers: List[str],
         themes: List[str],
         theme_hit_map: Dict[str, List[str]]
-    ) -> Tuple[str, str, str, List[str], float]:
+    ) -> Tuple[str, str, str, List[str], float, List[str]]:
         text = f"{title}. {summary}".lower()
         reasons: List[str] = []
         score = 0.0
         sentiment = "neutral"
         category = "general"
         tier = "MORE RELEVANT NEWS"
+        filing_types = detect_filing_types(text)
 
         macro_hits = matched_keywords(text, IMPORTANT_MACRO)
         fed_hits = matched_keywords(text, IMPORTANT_FED)
         analyst_hits = matched_keywords(text, IMPORTANT_ANALYST)
         company_hits = matched_keywords(text, IMPORTANT_COMPANY)
         theme_signal_hits = matched_keywords(text, IMPORTANT_THEME_SIGNALS)
+        sec_hits = matched_keywords(text, SEC_KEYWORDS)
+        inst_hits = matched_keywords(text, INSTITUTIONAL_KEYWORDS)
 
         if macro_hits:
             category = "macro"
@@ -482,6 +554,18 @@ class StockNewsAgent:
             tier = "ACTIONABLE"
             score += 3.5
             reasons.append("Important company event: " + ", ".join(company_hits[:4]))
+
+        if sec_hits:
+            category = "sec"
+            tier = "ACTIONABLE"
+            score += 3.5
+            reasons.append("SEC / insider signal: " + ", ".join(sec_hits[:4]))
+
+        if inst_hits:
+            category = "institutional"
+            tier = "ACTIONABLE"
+            score += 3.0
+            reasons.append("Institutional activity: " + ", ".join(inst_hits[:4]))
 
         if theme_signal_hits and themes and tier == "MORE RELEVANT NEWS":
             category = "theme"
@@ -510,6 +594,20 @@ class StockNewsAgent:
                 category = "theme"
             reasons.append("Theme relevance without ticker mention")
 
+        if sec_hits and "Insider / SEC Activity" not in themes:
+            themes.append("Insider / SEC Activity")
+
+        if inst_hits and "Institutional Activity" not in themes:
+            themes.append("Institutional Activity")
+
+        if sec_hits and score < 4.0:
+            score += 1.5
+            reasons.append("SEC filing relevance boost")
+
+        if inst_hits and score < 4.0:
+            score += 1.5
+            reasons.append("Institutional relevance boost")
+
         if tickers and score < 4.0:
             score += 1.5
             if tier == "MORE RELEVANT NEWS":
@@ -531,12 +629,14 @@ class StockNewsAgent:
         bullish_words = [
             "beat", "raises guidance", "surge", "strong demand", "upside",
             "upgrade", "raised price target", "bullish", "outperform",
-            "approval", "positive data"
+            "approval", "positive data", "insider buying", "insider purchase",
+            "increased stake", "institutional buying"
         ]
         bearish_words = [
             "miss", "cuts guidance", "weak demand", "investigation",
             "downgrade", "cut price target", "bearish", "underperform",
-            "rejection", "clinical hold"
+            "rejection", "clinical hold", "insider selling", "insider sale",
+            "reduced stake", "institutional selling"
         ]
 
         bullish_count = sum(1 for x in bullish_words if x in text)
@@ -554,7 +654,7 @@ class StockNewsAgent:
         elif tier == "THEME SIGNAL":
             score += 0.5
 
-        return category, tier, sentiment, reasons, score
+        return category, tier, sentiment, reasons, score, filing_types
 
     def is_important(
         self,
@@ -577,7 +677,7 @@ class StockNewsAgent:
                 if theme in {"Semiconductors", "Artificial Intelligence", "Drug Approvals"}:
                     return True
 
-        if contains_any(text, IMPORTANT_COMPANY + IMPORTANT_ANALYST):
+        if contains_any(text, IMPORTANT_COMPANY + IMPORTANT_ANALYST + SEC_KEYWORDS + INSTITUTIONAL_KEYWORDS):
             if (
                 "ai" in text
                 or "chip" in text
@@ -585,6 +685,14 @@ class StockNewsAgent:
                 or "quantum" in text
                 or "fda" in text
                 or "approval" in text
+                or "insider" in text
+                or "form 4" in text
+                or "8-k" in text
+                or "13d" in text
+                or "13g" in text
+                or "13f" in text
+                or "hedge fund" in text
+                or "institutional" in text
             ):
                 return True
 
@@ -625,6 +733,8 @@ def print_report(items: List[NewsItem], top_n: int = 250) -> None:
         print(f"    Source     : {item.source}")
         print(f"    Tickers    : {', '.join(item.tickers) if item.tickers else '-'}")
         print(f"    Themes     : {', '.join(item.themes) if item.themes else '-'}")
+        print(f"    Filing Types: {', '.join(item.filing_types) if item.filing_types else '-'}")
+        print(f"    Filing Meanings: {filing_meanings_text(item.filing_types)}")
         print(f"    Reasons    : {' | '.join(item.reasons)}")
         print(f"    Summary    : {item.summary[:220]}{'...' if len(item.summary) > 220 else ''}")
         print(f"    Link       : {item.link}")
@@ -644,84 +754,89 @@ def split_by_tier(items: List[NewsItem]) -> Dict[str, List[NewsItem]]:
             grouped["MORE RELEVANT NEWS"].append(item)
     return grouped
 
-def generate_html_dashboard(items: List[NewsItem], narrative: str = "", output_file: str = "index.html") -> None:
+
+def generate_html_dashboard(
+    items: List[NewsItem],
+    narrative: str = "",
+    output_file: str = "index.html"
+) -> None:
     grouped = split_by_tier(items)
 
-    html_parts = ["""
+    html_parts = [f"""
 <html>
 <head>
     <meta charset="utf-8">
     <title>Important Stock News Dashboard</title>
-    <div class="narrative">{html_lib.escape(narrative)}</div>
     <style>
-    	.narrative {
-        	background: #111827;
-        	border-radius: 8px;
-        	padding: 10px;
-        	margin-bottom: 10px;
-        	font-size: 11px;
-        	white-space: pre-wrap;
-        	line-height: 1.3;
-	}
-        body {
+        body {{
             font-family: Arial, sans-serif;
             background: #0f172a;
             color: #e2e8f0;
             margin: 0;
             padding: 8px;
-        }
-        h1 {
+        }}
+        h1 {{
             margin: 0 0 8px 0;
             font-size: 18px;
-        }
-        h2 {
+        }}
+        h2 {{
             margin: 10px 0 6px 0;
             font-size: 14px;
             color: #93c5fd;
-        }
-        .grid {
+        }}
+        .narrative {{
+            background: #111827;
+            border-radius: 8px;
+            padding: 10px;
+            margin-bottom: 10px;
+            font-size: 11px;
+            white-space: pre-wrap;
+            line-height: 1.3;
+        }}
+        .grid {{
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
             gap: 6px;
-        }
-        .card {
+        }}
+        .card {{
             background: #1e293b;
             border-radius: 7px;
             padding: 7px 8px;
             line-height: 1.15;
-        }
-        .title {
+        }}
+        .title {{
             font-size: 12px;
             font-weight: 700;
             margin-bottom: 3px;
-        }
-        .meta {
+        }}
+        .meta {{
             font-size: 10px;
             color: #cbd5e1;
             margin: 1px 0;
-        }
-        .summary {
+        }}
+        .summary {{
             font-size: 10px;
             margin-top: 3px;
             color: #e2e8f0;
-        }
-        .bullish { color: #22c55e; font-weight: 700; }
-        .bearish { color: #ef4444; font-weight: 700; }
-        .neutral { color: #facc15; font-weight: 700; }
-        a {
+        }}
+        .bullish {{ color: #22c55e; font-weight: 700; }}
+        .bearish {{ color: #ef4444; font-weight: 700; }}
+        .neutral {{ color: #facc15; font-weight: 700; }}
+        a {{
             color: #38bdf8;
             text-decoration: none;
             font-size: 10px;
-        }
-        .empty {
+        }}
+        .empty {{
             font-size: 10px;
             color: #94a3b8;
             padding: 4px 0 8px 0;
-        }
+        }}
     </style>
 </head>
 <body>
     <h1>Important Stock News Dashboard</h1>
+    <div class="narrative">{html_lib.escape(narrative)}</div>
 """]
 
     for section_name in ["MARKET MOVING", "ACTIONABLE", "THEME SIGNAL", "MORE RELEVANT NEWS"]:
@@ -743,6 +858,8 @@ def generate_html_dashboard(items: List[NewsItem], narrative: str = "", output_f
             safe_themes = html_lib.escape(", ".join(item.themes) if item.themes else "-")
             safe_tier = html_lib.escape(item.tier)
             safe_time = html_lib.escape(fmt_dt(item.published))
+            safe_filings = html_lib.escape(", ".join(item.filing_types) if item.filing_types else "-")
+            safe_filing_meanings = html_lib.escape(filing_meanings_text(item.filing_types))
             sentiment_class = item.sentiment if item.sentiment in {"bullish", "bearish", "neutral"} else "neutral"
 
             html_parts.append(f"""
@@ -752,6 +869,8 @@ def generate_html_dashboard(items: List[NewsItem], narrative: str = "", output_f
                 <div class='meta'>Tier: {safe_tier} | Score: {item.impact_score} | <span class='{sentiment_class}'>{html_lib.escape(item.sentiment)}</span></div>
                 <div class='meta'>Tickers: {safe_tickers}</div>
                 <div class='meta'>Themes: {safe_themes}</div>
+                <div class='meta'>Filings: {safe_filings}</div>
+                <div class='meta'>Meaning: {safe_filing_meanings}</div>
                 <div class='summary'>{safe_summary}</div>
                 <a href='{safe_link}' target='_blank'>Read more</a>
             </div>
@@ -766,7 +885,8 @@ def generate_html_dashboard(items: List[NewsItem], narrative: str = "", output_f
 
     print(f"HTML dashboard generated: {output_file}")
 
-def build_llm_narrative(items):
+
+def build_llm_narrative(items: List[NewsItem]) -> str:
     top_items = items[:25]
 
     bullet_lines = []
@@ -777,6 +897,8 @@ def build_llm_narrative(items):
             f"   Published: {fmt_dt(item.published)}\n"
             f"   Tickers: {', '.join(item.tickers) if item.tickers else '-'}\n"
             f"   Themes: {', '.join(item.themes) if item.themes else '-'}\n"
+            f"   Filing Types: {', '.join(item.filing_types) if item.filing_types else '-'}\n"
+            f"   Filing Meanings: {filing_meanings_text(item.filing_types)}\n"
             f"   Summary: {item.summary[:300]}"
         )
 
@@ -791,6 +913,23 @@ I will give you filtered news covering only:
 - Quantum computing
 - Drug approvals
 - Economic indicators / forecasts
+- Insider / SEC activity
+- Institutional activity
+
+Translate filing codes into plain English when useful:
+- Form 4 = insider trading filing
+- 8-K = major current company event filing
+- Schedule 13D = active large stake disclosure
+- Schedule 13G = passive large stake disclosure
+- 13F = institutional holdings report
+
+Pay special attention to:
+- insider buying / insider selling
+- Form 4 filings
+- Schedule 13D / 13G
+- 8-K filings
+- institutional activity / 13F changes
+- whether ownership changes strengthen or weaken the story
 
 Tasks:
 1. Pick the 10 most important items.
@@ -801,6 +940,8 @@ Tasks:
    - AI
    - quantum computing
    - drug approvals
+   - insider / SEC activity
+   - institutional activity
    - macro / economic backdrop
 5. End with:
    - Top bullish themes
@@ -819,6 +960,7 @@ News items:
 
     return response.message.content
 
+
 # ============================================================
 # MAIN
 # ============================================================
@@ -829,11 +971,15 @@ if __name__ == "__main__":
 
     print_report(results, top_n=50)
 
+    print("Building LLM narrative...")
     narrative = build_llm_narrative(results)
+    print("LLM narrative complete.")
+
     print("\n" + "=" * 120)
     print("LOCAL LLM NARRATIVE")
     print("=" * 120)
     print(narrative)
 
-    narrative = build_llm_narrative(results)
+    print("Generating HTML...")
     generate_html_dashboard(results, narrative=narrative, output_file="index.html")
+    print("HTML generated.")
