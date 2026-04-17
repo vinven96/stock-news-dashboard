@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import List, Dict, Optional, Tuple
-from urllib.parse import quote_plus
 
 
 # ============================================================
@@ -25,44 +24,6 @@ QUALITY_STOCKS = {
     "MRVL", "QCOM", "ARM", "ASML", "TSM", "CRM",
     "ORCL", "ADBE", "UBER", "COST", "WMT", "PANW",
     "CRWD", "SNOW", "DELL", "HPE", "PLTR", "INTC"
-}
-
-TICKER_TO_COMPANY = {
-    "NVDA": "NVIDIA",
-    "AMD": "AMD",
-    "MU": "Micron",
-    "AVGO": "Broadcom",
-    "LITE": "Lumentum",
-    "AAOI": "Applied Optoelectronics",
-    "AAPL": "Apple",
-    "MSFT": "Microsoft",
-    "AMZN": "Amazon",
-    "META": "Meta",
-    "GOOGL": "Google",
-    "TSLA": "Tesla",
-    "NFLX": "Netflix",
-    "JPM": "JPMorgan",
-    "LLY": "Eli Lilly",
-    "SMCI": "Super Micro Computer",
-    "ANET": "Arista Networks",
-    "MRVL": "Marvell",
-    "QCOM": "Qualcomm",
-    "ARM": "Arm Holdings",
-    "ASML": "ASML",
-    "TSM": "TSMC",
-    "CRM": "Salesforce",
-    "ORCL": "Oracle",
-    "ADBE": "Adobe",
-    "UBER": "Uber",
-    "COST": "Costco",
-    "WMT": "Walmart",
-    "PANW": "Palo Alto Networks",
-    "CRWD": "CrowdStrike",
-    "SNOW": "Snowflake",
-    "DELL": "Dell",
-    "HPE": "Hewlett Packard Enterprise",
-    "PLTR": "Palantir",
-    "INTC": "Intel",
 }
 
 TICKER_TO_SECTOR = {
@@ -150,7 +111,7 @@ SECTOR_KEYWORDS = {
     ]
 }
 
-BROAD_RSS_FEEDS = [
+RSS_FEEDS = [
     "https://feeds.reuters.com/reuters/businessNews",
     "https://feeds.reuters.com/news/usmarkets",
     "https://www.cnbc.com/id/100003114/device/rss/rss.html",
@@ -158,7 +119,7 @@ BROAD_RSS_FEEDS = [
     "http://feeds.marketwatch.com/marketwatch/topstories/",
 ]
 
-MAX_ITEMS_PER_FEED = 60
+MAX_ITEMS_PER_FEED = 150
 
 IMPORTANT_MACRO = [
     "cpi", "ppi", "pce", "inflation", "nonfarm payrolls", "payrolls",
@@ -304,28 +265,6 @@ def extract_sector_hits(text: str) -> Dict[str, List[str]]:
     return hits
 
 
-def google_news_rss(query: str) -> str:
-    return f"https://news.google.com/rss/search?q={quote_plus(query)}&hl=en-US&gl=US&ceid=US:en"
-
-
-def build_dynamic_feeds() -> List[str]:
-    feeds = list(BROAD_RSS_FEEDS)
-
-    ticker_feed_symbols = sorted(set(WATCHLIST).union(QUALITY_STOCKS))
-    for ticker in ticker_feed_symbols:
-        company = TICKER_TO_COMPANY.get(ticker, ticker)
-        feeds.append(google_news_rss(f'"{ticker}" stock OR "{company}" stock'))
-        feeds.append(google_news_rss(f'"{ticker}" earnings OR "{company}" earnings'))
-        feeds.append(google_news_rss(f'"{ticker}" analyst upgrade OR "{ticker}" analyst downgrade'))
-
-    sector_queries = sorted(set(TICKER_TO_SECTOR.values()))
-    for sector in sector_queries:
-        feeds.append(google_news_rss(f'"{sector}" stocks'))
-        feeds.append(google_news_rss(f'"{sector}" demand OR "{sector}" pricing OR "{sector}" earnings'))
-
-    return feeds
-
-
 # ============================================================
 # AGENT
 # ============================================================
@@ -336,11 +275,10 @@ class StockNewsAgent:
         self.quality_stocks = {t.upper() for t in QUALITY_STOCKS}
         self.ticker_to_sector = {k.upper(): v for k, v in TICKER_TO_SECTOR.items()}
         self.all_tickers = sorted(set(self.watchlist).union(self.quality_stocks))
-        self.rss_feeds = build_dynamic_feeds()
 
     def fetch_all_feeds(self) -> List[dict]:
         entries = []
-        for feed_url in self.rss_feeds:
+        for feed_url in RSS_FEEDS:
             try:
                 parsed = feedparser.parse(feed_url)
                 feed_title = parsed.feed.get("title", feed_url)
@@ -435,12 +373,6 @@ class StockNewsAgent:
             ]
             if any(re.search(p, text) for p in patterns):
                 hits.append(ticker)
-
-        # company name fallback
-        for ticker, company in TICKER_TO_COMPANY.items():
-            if company.lower() in text:
-                hits.append(ticker)
-
         return sorted(set(hits))
 
     def find_sectors_from_hits(self, tickers: List[str], sector_hit_map: Dict[str, List[str]]) -> List[str]:
@@ -604,7 +536,7 @@ class StockNewsAgent:
 # OUTPUT
 # ============================================================
 
-def print_report(items: List[NewsItem], top_n: int = 250) -> None:
+def print_report(items: List[NewsItem], top_n: int = 200) -> None:
     print("\n" + "=" * 120)
     print("IMPORTANT STOCK NEWS")
     print("=" * 120)
@@ -723,7 +655,7 @@ def generate_html_dashboard(items: List[NewsItem], output_file: str = "index.htm
 
         html_parts.append("<div class='grid'>")
 
-        for item in section_items[:200]:
+        for item in section_items[:150]:
             safe_title = html_lib.escape(item.title)
             safe_source = html_lib.escape(item.source)
             safe_summary = html_lib.escape(item.summary[:150])
@@ -764,5 +696,5 @@ if __name__ == "__main__":
     agent = StockNewsAgent()
     results = agent.run()
 
-    print_report(results, top_n=250)
+    print_report(results, top_n=200)
     generate_html_dashboard(results, output_file="index.html")
