@@ -64,7 +64,6 @@ TICKER_TO_SECTOR = {
     "INTC": "Semiconductors",
 }
 
-# Avoid super-short ambiguous terms unless matched as whole words
 SECTOR_KEYWORDS = {
     "Semiconductors": [
         "semiconductor", "chip", "chips", "gpu", "ai chip", "foundry",
@@ -120,14 +119,15 @@ RSS_FEEDS = [
     "http://feeds.marketwatch.com/marketwatch/topstories/",
 ]
 
-MAX_ITEMS_PER_FEED = 120
+MAX_ITEMS_PER_FEED = 150
 
 IMPORTANT_MACRO = [
     "cpi", "ppi", "pce", "inflation", "nonfarm payrolls", "payrolls",
     "jobs report", "jobless claims", "unemployment rate", "gdp",
     "retail sales", "consumer confidence", "ism manufacturing", "ism services",
     "treasury yield", "treasury yields", "10-year yield", "bond yields",
-    "opec", "oil prices", "crude oil", "recession", "trade deficit"
+    "opec", "oil prices", "crude oil", "recession", "trade deficit",
+    "growth slowdown", "growth worries"
 ]
 
 IMPORTANT_FED = [
@@ -158,7 +158,8 @@ IMPORTANT_SECTOR = [
     "pricing", "prices rise", "prices fall", "demand surge", "weak demand",
     "backlog", "capex", "capacity", "utilization", "supply glut", "supply shortage",
     "cloud spending", "ai spending", "server demand", "memory pricing", "hbm demand",
-    "bookings", "lead times", "inventory correction", "inventory build"
+    "bookings", "lead times", "inventory correction", "inventory build",
+    "datacenter demand", "enterprise demand"
 ]
 
 NOISE_PATTERNS = [
@@ -246,9 +247,6 @@ def fmt_dt(dt: Optional[datetime]) -> str:
 
 
 def keyword_present(text: str, keyword: str) -> bool:
-    """
-    Use whole-word matching for short keywords and substring for longer phrases.
-    """
     keyword = keyword.lower().strip()
     text = text.lower()
 
@@ -322,8 +320,12 @@ class StockNewsAgent:
 
         full_text = f"{title}. {summary}".lower()
 
+        # Only reject obvious junk if it is NOT relevant to your stocks/sectors/macro
         if contains_any(full_text, NOISE_PATTERNS):
-            return None
+            if not any(t.lower() in full_text for t in self.all_tickers):
+                sector_tmp = extract_sector_hits(full_text)
+                if not sector_tmp and not contains_any(full_text, IMPORTANT_MACRO + IMPORTANT_FED):
+                    return None
 
         tickers = self.find_tickers(full_text)
         sector_hit_map = extract_sector_hits(full_text)
@@ -411,31 +413,31 @@ class StockNewsAgent:
         if macro_hits:
             category = "macro"
             tier = "MARKET MOVING"
-            score += 5.0
+            score += 4.0
             reasons.append("Macro data event: " + ", ".join(macro_hits[:4]))
 
         if fed_hits:
             category = "macro"
             tier = "MARKET MOVING"
-            score += 5.5
+            score += 4.5
             reasons.append("Fed-related event: " + ", ".join(fed_hits[:4]))
 
         if analyst_hits and tickers:
             category = "analyst"
             tier = "ACTIONABLE"
-            score += 4.0
+            score += 3.5
             reasons.append("Analyst action: " + ", ".join(analyst_hits[:4]))
 
         if company_hits and tickers:
             category = "company"
             tier = "ACTIONABLE"
-            score += 4.0
+            score += 3.5
             reasons.append("Important company event: " + ", ".join(company_hits[:4]))
 
         if sector_signal_hits and sectors and tier == "LOW PRIORITY":
             category = "sector"
             tier = "SECTOR SIGNAL"
-            score += 3.5
+            score += 3.0
             reasons.append("Sector signal: " + ", ".join(sector_signal_hits[:4]))
 
         quality_hits = [t for t in tickers if t in self.quality_stocks]
@@ -459,12 +461,20 @@ class StockNewsAgent:
                 category = "sector"
             reasons.append("Sector theme without ticker mention")
 
-        # Important broad story mentioning a quality ticker but not classic company keywords
-        if tickers and tier == "LOW PRIORITY":
-            category = "company"
-            tier = "ACTIONABLE"
-            score += 2.5
-            reasons.append("Broad story mentioning tracked/quality ticker")
+        # Broad relevance boost
+        if tickers and score < 4.0:
+            score += 1.5
+            if tier == "LOW PRIORITY":
+                tier = "ACTIONABLE"
+                category = "company"
+            reasons.append("Broad ticker relevance")
+
+        if sectors and score < 4.0:
+            score += 1.0
+            if tier == "LOW PRIORITY":
+                tier = "SECTOR SIGNAL"
+                category = "sector"
+            reasons.append("Broad sector relevance")
 
         bullish_words = [
             "beat", "raises guidance", "surge", "strong demand", "upside",
@@ -484,9 +494,9 @@ class StockNewsAgent:
             sentiment = "bearish"
 
         if tier == "MARKET MOVING":
-            score += 1.5
-        elif tier == "ACTIONABLE":
             score += 1.0
+        elif tier == "ACTIONABLE":
+            score += 0.75
         elif tier == "SECTOR SIGNAL":
             score += 0.5
 
@@ -501,19 +511,12 @@ class StockNewsAgent:
         tier: str,
         score: float
     ) -> bool:
-        if contains_any(text, IMPORTANT_MACRO + IMPORTANT_FED):
-            return score >= 3.0
-
-        if category == "analyst":
-            return bool(tickers) and score >= 4.5
-
-        if category == "company":
-            return bool(tickers) and score >= 4.0
-
-        if category == "sector":
-            return bool(sectors) and score >= 4.0
-
-        return score >= 4.5
+        return (
+            bool(tickers)
+            or bool(sectors)
+            or contains_any(text, IMPORTANT_MACRO + IMPORTANT_FED)
+            or contains_any(text, IMPORTANT_ANALYST + IMPORTANT_COMPANY + IMPORTANT_SECTOR)
+        )
 
     def deduplicate(self, items: List[NewsItem]) -> List[NewsItem]:
         seen: Dict[str, NewsItem] = {}
@@ -531,7 +534,7 @@ class StockNewsAgent:
 # OUTPUT
 # ============================================================
 
-def print_report(items: List[NewsItem], top_n: int = 100) -> None:
+def print_report(items: List[NewsItem], top_n: int = 150) -> None:
     print("\n" + "=" * 120)
     print("IMPORTANT STOCK NEWS")
     print("=" * 120)
@@ -551,7 +554,7 @@ def print_report(items: List[NewsItem], top_n: int = 100) -> None:
         print(f"    Tickers    : {', '.join(item.tickers) if item.tickers else '-'}")
         print(f"    Sectors    : {', '.join(item.sectors) if item.sectors else '-'}")
         print(f"    Reasons    : {' | '.join(item.reasons)}")
-        print(f"    Summary    : {item.summary[:240]}{'...' if len(item.summary) > 240 else ''}")
+        print(f"    Summary    : {item.summary[:220]}{'...' if len(item.summary) > 220 else ''}")
         print(f"    Link       : {item.link}")
 
 
@@ -564,6 +567,8 @@ def split_by_tier(items: List[NewsItem]) -> Dict[str, List[NewsItem]]:
     for item in items:
         if item.tier in grouped:
             grouped[item.tier].append(item)
+        else:
+            grouped["SECTOR SIGNAL"].append(item)
     return grouped
 
 
@@ -647,7 +652,7 @@ def generate_html_dashboard(items: List[NewsItem], output_file: str = "index.htm
 
         html_parts.append("<div class='grid'>")
 
-        for item in section_items[:100]:
+        for item in section_items[:150]:
             safe_title = html_lib.escape(item.title)
             safe_source = html_lib.escape(item.source)
             safe_summary = html_lib.escape(item.summary[:150])
@@ -688,5 +693,5 @@ if __name__ == "__main__":
     agent = StockNewsAgent()
     results = agent.run()
 
-    print_report(results, top_n=100)
+    print_report(results, top_n=150)
     generate_html_dashboard(results, output_file="index.html")
