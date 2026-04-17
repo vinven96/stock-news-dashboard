@@ -22,7 +22,8 @@ QUALITY_STOCKS = {
     "AAPL", "MSFT", "AMZN", "META", "GOOGL",
     "TSLA", "NFLX", "JPM", "LLY", "SMCI", "ANET",
     "MRVL", "QCOM", "ARM", "ASML", "TSM", "CRM",
-    "ORCL", "ADBE", "UBER", "COST", "WMT"
+    "ORCL", "ADBE", "UBER", "COST", "WMT", "PANW",
+    "CRWD", "SNOW", "DELL", "HPE", "PLTR", "INTC"
 }
 
 TICKER_TO_SECTOR = {
@@ -54,16 +55,23 @@ TICKER_TO_SECTOR = {
     "UBER": "Internet",
     "COST": "Consumer",
     "WMT": "Consumer",
+    "PANW": "Cybersecurity",
+    "CRWD": "Cybersecurity",
+    "SNOW": "Software / Cloud",
+    "DELL": "AI Infrastructure",
+    "HPE": "AI Infrastructure",
+    "PLTR": "Software / AI",
+    "INTC": "Semiconductors",
 }
 
 SECTOR_KEYWORDS = {
     "Semiconductors": [
         "semiconductor", "chip", "chips", "gpu", "ai chip", "foundry",
-        "fab", "wafer", "chipmaker", "datacenter chip"
+        "fab", "wafer", "chipmaker", "datacenter chip", "accelerator"
     ],
     "Memory": [
         "dram", "nand", "memory prices", "memory pricing", "hbm",
-        "memory chip", "memory market"
+        "memory chip", "memory market", "ddr5"
     ],
     "Optical Networking": [
         "optical", "transceiver", "photonics", "coherent", "datacenter interconnect"
@@ -84,7 +92,7 @@ SECTOR_KEYWORDS = {
         "bank", "banking", "loan growth", "credit quality", "net interest income"
     ],
     "AI Infrastructure": [
-        "server", "rack", "ai server", "liquid cooling", "infrastructure buildout"
+        "server", "rack", "ai server", "liquid cooling", "infrastructure buildout", "datacenter buildout"
     ],
     "Networking": [
         "ethernet", "switching", "routing", "networking", "datacenter network"
@@ -94,6 +102,12 @@ SECTOR_KEYWORDS = {
     ],
     "Consumer": [
         "consumer spending", "retail sales", "same-store sales"
+    ],
+    "Cybersecurity": [
+        "cybersecurity", "cyber attack", "security software", "endpoint security"
+    ],
+    "Software / AI": [
+        "ai software", "large language model", "llm", "artificial intelligence platform"
     ]
 }
 
@@ -105,13 +119,14 @@ RSS_FEEDS = [
     "http://feeds.marketwatch.com/marketwatch/topstories/",
 ]
 
-MAX_ITEMS_PER_FEED = 100
+MAX_ITEMS_PER_FEED = 120
 
 IMPORTANT_MACRO = [
     "cpi", "ppi", "pce", "inflation", "nonfarm payrolls", "payrolls",
     "jobs report", "jobless claims", "unemployment rate", "gdp",
     "retail sales", "consumer confidence", "ism manufacturing", "ism services",
-    "treasury yield", "treasury yields", "10-year yield", "bond yields"
+    "treasury yield", "treasury yields", "10-year yield", "bond yields",
+    "opec", "oil prices", "crude oil", "recession", "trade deficit"
 ]
 
 IMPORTANT_FED = [
@@ -124,7 +139,8 @@ IMPORTANT_ANALYST = [
     "upgrade", "upgraded", "downgrade", "downgraded",
     "price target", "raises target", "cuts target",
     "raises price target", "cuts price target",
-    "outperform", "overweight", "underperform", "neutral", "buy rating", "sell rating"
+    "outperform", "overweight", "underperform", "neutral",
+    "buy rating", "sell rating", "initiated", "reiterated"
 ]
 
 IMPORTANT_COMPANY = [
@@ -133,21 +149,29 @@ IMPORTANT_COMPANY = [
     "sec", "doj", "investigation", "probe", "lawsuit",
     "merger", "acquisition", "deal talks", "bankruptcy",
     "tariff", "sanctions", "export restriction", "ban",
-    "product launch", "order backlog", "large order", "supply agreement"
+    "product launch", "order backlog", "large order", "supply agreement",
+    "buyback", "share repurchase", "capital raise", "offering"
 ]
 
 IMPORTANT_SECTOR = [
     "pricing", "prices rise", "prices fall", "demand surge", "weak demand",
     "backlog", "capex", "capacity", "utilization", "supply glut", "supply shortage",
-    "cloud spending", "ai spending", "server demand", "memory pricing", "hbm demand"
+    "cloud spending", "ai spending", "server demand", "memory pricing", "hbm demand",
+    "bookings", "lead times", "inventory correction", "inventory build"
 ]
 
 NOISE_PATTERNS = [
-    "stocks to watch", "top stocks", "best stocks", "3 stocks", "5 stocks",
-    "why this stock", "why these stocks", "market open", "opening bell",
-    "premarket", "pre-market", "technical analysis", "opinion", "editorial",
-    "motley fool", "zacks", "benzinga", "investing.com", "seeking alpha analysis",
-    "dividend stock", "penny stock", "hot stock", "stock picks"
+    "top stocks",
+    "best stocks",
+    "3 stocks",
+    "5 stocks",
+    "technical analysis",
+    "opinion",
+    "editorial",
+    "motley fool",
+    "zacks",
+    "penny stock",
+    "hot stock"
 ]
 
 
@@ -352,44 +376,48 @@ class StockNewsAgent:
         company_hits = matched_keywords(text, IMPORTANT_COMPANY)
         sector_hits = matched_keywords(text, IMPORTANT_SECTOR)
 
+        # Macro / Fed
         if macro_hits:
             category = "macro"
             tier = "MARKET MOVING"
-            score += 6.0
+            score += 5.5
             reasons.append("Macro data event: " + ", ".join(macro_hits[:4]))
 
         if fed_hits:
             category = "macro"
             tier = "MARKET MOVING"
-            score += 7.0
+            score += 6.0
             reasons.append("Fed-related event: " + ", ".join(fed_hits[:4]))
 
+        # Analyst
         if analyst_hits and tickers:
             category = "analyst"
             tier = "ACTIONABLE"
-            score += 5.5
+            score += 4.5
             reasons.append("Analyst action on tracked stock: " + ", ".join(analyst_hits[:4]))
 
+        # Company
         if company_hits and tickers:
             category = "company"
             tier = "ACTIONABLE"
-            score += 5.0
+            score += 4.0
             reasons.append("Important company event: " + ", ".join(company_hits[:4]))
 
+        # Sector
         if sector_hits and sectors and tier == "LOW PRIORITY":
             category = "sector"
             tier = "SECTOR SIGNAL"
-            score += 4.5
+            score += 4.0
             reasons.append("Sector signal: " + ", ".join(sector_hits[:4]))
 
         quality_hits = [t for t in tickers if t in self.quality_stocks]
         if quality_hits:
-            score += 2.5
+            score += 2.0
             reasons.append("Mentions quality stock(s): " + ", ".join(quality_hits[:5]))
 
         watch_hits = [t for t in tickers if t in self.watchlist]
         if watch_hits:
-            score += 2.0
+            score += 1.5
             reasons.append("Mentions watchlist ticker(s): " + ", ".join(watch_hits[:5]))
 
         if sectors:
@@ -397,7 +425,7 @@ class StockNewsAgent:
             reasons.append("Touches tracked sector(s): " + ", ".join(sectors[:4]))
 
         if sectors and sector_hits and not tickers:
-            score += 1.5
+            score += 2.0
             if tier == "LOW PRIORITY":
                 tier = "SECTOR SIGNAL"
                 category = "sector"
@@ -439,18 +467,18 @@ class StockNewsAgent:
         score: float
     ) -> bool:
         if contains_any(text, IMPORTANT_MACRO + IMPORTANT_FED):
-            return score >= 6.0
+            return score >= 5.0
 
         if category == "analyst":
-            return bool(tickers) and score >= 7.0
+            return bool(tickers) and score >= 5.5
 
         if category == "company":
-            return bool(tickers) and score >= 7.0
+            return bool(tickers) and score >= 5.0
 
         if category == "sector":
-            return bool(sectors) and score >= 6.0
+            return bool(sectors) and score >= 4.5
 
-        return tier in {"MARKET MOVING", "ACTIONABLE", "SECTOR SIGNAL"} and score >= 7.0
+        return score >= 5.0
 
     def deduplicate(self, items: List[NewsItem]) -> List[NewsItem]:
         seen: Dict[str, NewsItem] = {}
@@ -468,7 +496,7 @@ class StockNewsAgent:
 # OUTPUT
 # ============================================================
 
-def print_report(items: List[NewsItem], top_n: int = 50) -> None:
+def print_report(items: List[NewsItem], top_n: int = 80) -> None:
     print("\n" + "=" * 120)
     print("IMPORTANT STOCK NEWS")
     print("=" * 120)
@@ -488,7 +516,7 @@ def print_report(items: List[NewsItem], top_n: int = 50) -> None:
         print(f"    Tickers    : {', '.join(item.tickers) if item.tickers else '-'}")
         print(f"    Sectors    : {', '.join(item.sectors) if item.sectors else '-'}")
         print(f"    Reasons    : {' | '.join(item.reasons)}")
-        print(f"    Summary    : {item.summary[:300]}{'...' if len(item.summary) > 300 else ''}")
+        print(f"    Summary    : {item.summary[:240]}{'...' if len(item.summary) > 240 else ''}")
         print(f"    Link       : {item.link}")
 
 
@@ -518,41 +546,41 @@ def generate_html_dashboard(items: List[NewsItem], output_file: str = "index.htm
             background: #0f172a;
             color: #e2e8f0;
             margin: 0;
-            padding: 10px;
+            padding: 8px;
         }
         h1 {
-            margin: 0 0 10px 0;
-            font-size: 20px;
+            margin: 0 0 8px 0;
+            font-size: 18px;
         }
         h2 {
-            margin: 14px 0 8px 0;
-            font-size: 15px;
+            margin: 10px 0 6px 0;
+            font-size: 14px;
             color: #93c5fd;
         }
         .grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
-            gap: 8px;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 6px;
         }
         .card {
             background: #1e293b;
-            border-radius: 8px;
-            padding: 8px 10px;
-            line-height: 1.2;
+            border-radius: 7px;
+            padding: 7px 8px;
+            line-height: 1.15;
         }
         .title {
-            font-size: 13px;
+            font-size: 12px;
             font-weight: 700;
-            margin-bottom: 4px;
+            margin-bottom: 3px;
         }
         .meta {
-            font-size: 11px;
+            font-size: 10px;
             color: #cbd5e1;
-            margin: 2px 0;
+            margin: 1px 0;
         }
         .summary {
-            font-size: 11px;
-            margin-top: 4px;
+            font-size: 10px;
+            margin-top: 3px;
             color: #e2e8f0;
         }
         .bullish { color: #22c55e; font-weight: 700; }
@@ -561,10 +589,10 @@ def generate_html_dashboard(items: List[NewsItem], output_file: str = "index.htm
         a {
             color: #38bdf8;
             text-decoration: none;
-            font-size: 11px;
+            font-size: 10px;
         }
         .empty {
-            font-size: 11px;
+            font-size: 10px;
             color: #94a3b8;
             padding: 4px 0 8px 0;
         }
@@ -584,10 +612,10 @@ def generate_html_dashboard(items: List[NewsItem], output_file: str = "index.htm
 
         html_parts.append("<div class='grid'>")
 
-        for item in section_items[:40]:
+        for item in section_items[:80]:
             safe_title = html_lib.escape(item.title)
             safe_source = html_lib.escape(item.source)
-            safe_summary = html_lib.escape(item.summary[:180])
+            safe_summary = html_lib.escape(item.summary[:150])
             safe_link = html_lib.escape(item.link, quote=True)
             safe_tickers = html_lib.escape(", ".join(item.tickers) if item.tickers else "-")
             safe_sectors = html_lib.escape(", ".join(item.sectors) if item.sectors else "-")
@@ -625,5 +653,5 @@ if __name__ == "__main__":
     agent = StockNewsAgent()
     results = agent.run()
 
-    print_report(results, top_n=50)
+    print_report(results, top_n=80)
     generate_html_dashboard(results, output_file="index.html")
