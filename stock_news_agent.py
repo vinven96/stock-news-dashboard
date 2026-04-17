@@ -467,7 +467,7 @@ class StockNewsAgent:
         score: float
     ) -> bool:
         if contains_any(text, IMPORTANT_MACRO + IMPORTANT_FED):
-            return score >= 5.0
+            return score >= 4.0
 
         if category == "analyst":
             return bool(tickers) and score >= 5.5
