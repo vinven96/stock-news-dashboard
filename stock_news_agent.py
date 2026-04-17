@@ -1,3 +1,4 @@
+from ollama import chat
 import feedparser
 import re
 import html as html_lib
@@ -756,6 +757,58 @@ def generate_html_dashboard(items: List[NewsItem], output_file: str = "index.htm
 
     print(f"HTML dashboard generated: {output_file}")
 
+def build_llm_narrative(items):
+    top_items = items[:25]
+
+    bullet_lines = []
+    for idx, item in enumerate(top_items, 1):
+        bullet_lines.append(
+            f"{idx}. Title: {item.title}\n"
+            f"   Source: {item.source}\n"
+            f"   Published: {fmt_dt(item.published)}\n"
+            f"   Tickers: {', '.join(item.tickers) if item.tickers else '-'}\n"
+            f"   Themes: {', '.join(item.themes) if item.themes else '-'}\n"
+            f"   Summary: {item.summary[:300]}"
+        )
+
+    news_block = "\n\n".join(bullet_lines)
+
+    prompt = f"""
+You are a market news analyst.
+
+I will give you filtered news covering only:
+- Semiconductors
+- Artificial intelligence
+- Quantum computing
+- Drug approvals
+- Economic indicators / forecasts
+
+Tasks:
+1. Pick the 10 most important items.
+2. For each, explain in 1-2 sentences why it matters.
+3. Tag each as bullish, bearish, or neutral.
+4. Give a short narrative for today's market:
+   - semiconductors
+   - AI
+   - quantum computing
+   - drug approvals
+   - macro / economic backdrop
+5. End with:
+   - Top bullish themes
+   - Top bearish themes
+   - What to watch next
+
+News items:
+{news_block}
+"""
+
+    response = chat(
+        model="deepseek-r1:8b",
+        messages=[{"role": "user", "content": prompt}],
+        think=False,
+    )
+
+    return response.message.content
 
 # ============================================================
 # MAIN
@@ -765,5 +818,12 @@ if __name__ == "__main__":
     agent = StockNewsAgent()
     results = agent.run()
 
-    print_report(results, top_n=250)
+    print_report(results, top_n=50)
+
+    narrative = build_llm_narrative(results)
+    print("\n" + "=" * 120)
+    print("LOCAL LLM NARRATIVE")
+    print("=" * 120)
+    print(narrative)
+
     generate_html_dashboard(results, output_file="index.html")
